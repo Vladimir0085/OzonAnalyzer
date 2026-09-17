@@ -33,6 +33,7 @@ from .excel_reader import (
     workbook_sheet_names,
 )
 from .exporter import export_calculation, export_run, suggested_export_name
+from .help_content import OVERVIEW_HELP_CONTENT, REPORTS_HELP_CONTENT, HelpContent
 from .models import Product, ProductResult, RunCalculation, RunSummary, ScenarioRow, UnknownProduct
 from .ordering import insert_at_group_end
 from .service import AppService, ImportBatch, ImportSession
@@ -197,6 +198,7 @@ class OZPriceAnalyzerApp(tk.Tk):
         self.history_tab = ttk.Frame(self.notebook, padding=4)
         self.trend_tab = ttk.Frame(self.notebook, padding=4)
         self.comparison_tab = ttk.Frame(self.notebook, padding=4)
+        self.help_tab = ttk.Frame(self.notebook, padding=4)
         self.settings_tab = ttk.Frame(self.notebook, padding=4)
         self.notebook.add(self.overview_tab, text="Обзор")
         self.notebook.add(self.sources_tab, text="Исходные файлы")
@@ -206,6 +208,7 @@ class OZPriceAnalyzerApp(tk.Tk):
         self.notebook.add(self.history_tab, text="История отчетов")
         self.notebook.add(self.trend_tab, text="Динамика")
         self.notebook.add(self.comparison_tab, text="Сравнение периодов")
+        self.notebook.add(self.help_tab, text="Справка")
         self.notebook.add(self.settings_tab, text="Настройки")
 
         self._build_overview_tab()
@@ -216,6 +219,7 @@ class OZPriceAnalyzerApp(tk.Tk):
         self._build_history_tab()
         self._build_trend_tab()
         self._build_comparison_tab()
+        self._build_help_tab()
         self._build_settings_tab()
 
         self.status_var = tk.StringVar(value="Готово")
@@ -748,6 +752,119 @@ class OZPriceAnalyzerApp(tk.Tk):
             row=4,
             widths=[120, 230] + [135] * 14,
         )
+
+    def _build_help_tab(self) -> None:
+        self.help_tab.columnconfigure(0, weight=1)
+        self.help_tab.rowconfigure(1, weight=1)
+        ttk.Label(
+            self.help_tab,
+            text="Справка по исходным отчётам и расчётам",
+            style="Section.TLabel",
+        ).grid(row=0, column=0, sticky="w", pady=(10, 8))
+
+        help_notebook = ttk.Notebook(self.help_tab)
+        help_notebook.grid(row=1, column=0, sticky="nsew")
+        reports_tab = ttk.Frame(help_notebook, padding=4)
+        overview_tab = ttk.Frame(help_notebook, padding=4)
+        help_notebook.add(reports_tab, text="Загрузка отчётов")
+        help_notebook.add(overview_tab, text="Показатели «Обзора»")
+
+        self.help_text_widgets = [
+            self._create_help_document(reports_tab, REPORTS_HELP_CONTENT),
+            self._create_help_document(overview_tab, OVERVIEW_HELP_CONTENT),
+        ]
+        self._configure_help_text_theme()
+
+    def _create_help_document(self, parent: ttk.Frame, content: HelpContent) -> tk.Text:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
+        text = tk.Text(
+            parent,
+            wrap="word",
+            relief="flat",
+            borderwidth=0,
+            padx=20,
+            pady=16,
+            cursor="arrow",
+            takefocus=True,
+        )
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=text.yview)
+        text.configure(yscrollcommand=scrollbar.set)
+        text.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+
+        text.tag_configure(
+            "title",
+            font=("Segoe UI Semibold", 18),
+            spacing1=2,
+            spacing3=14,
+        )
+        text.tag_configure(
+            "heading",
+            font=("Segoe UI Semibold", 13),
+            spacing1=16,
+            spacing3=7,
+        )
+        text.tag_configure(
+            "subheading",
+            font=("Segoe UI Semibold", 11),
+            spacing1=10,
+            spacing3=4,
+        )
+        text.tag_configure("body", spacing1=2, spacing3=7, lmargin2=2)
+        text.tag_configure("bullet", spacing1=2, spacing3=5, lmargin1=18, lmargin2=34)
+        text.tag_configure(
+            "formula",
+            font=("Consolas", 10),
+            spacing1=4,
+            spacing3=7,
+            lmargin1=18,
+            lmargin2=18,
+            rmargin=18,
+        )
+        text.tag_configure(
+            "note",
+            spacing1=5,
+            spacing3=8,
+            lmargin1=18,
+            lmargin2=18,
+            rmargin=18,
+        )
+        text.tag_configure(
+            "warning",
+            font=("Segoe UI Semibold", 10),
+            spacing1=5,
+            spacing3=8,
+            lmargin1=18,
+            lmargin2=18,
+            rmargin=18,
+        )
+        for style, value in content:
+            text.insert("end", f"{value}\n", style)
+        text.configure(state="disabled")
+        return text
+
+    def _configure_help_text_theme(self) -> None:
+        for text in getattr(self, "help_text_widgets", ()):
+            text.configure(
+                background=self.colors["surface"],
+                foreground=self.colors["text"],
+                insertbackground=self.colors["text"],
+                selectbackground=self.colors["selection"],
+                selectforeground=self.colors["text"],
+            )
+            text.tag_configure("title", foreground=self.colors["text"])
+            text.tag_configure("heading", foreground=self.colors["accent"])
+            text.tag_configure("subheading", foreground=self.colors["text"])
+            text.tag_configure("body", foreground=self.colors["text"])
+            text.tag_configure("bullet", foreground=self.colors["text"])
+            text.tag_configure(
+                "formula",
+                foreground=self.colors["text"],
+                background=self.colors["surface_alt"],
+            )
+            text.tag_configure("note", foreground=self.colors["muted"])
+            text.tag_configure("warning", foreground=self.colors["warning"])
 
     def _build_settings_tab(self) -> None:
         self.settings_tab.columnconfigure(0, weight=1)
@@ -2271,10 +2388,12 @@ class OZPriceAnalyzerApp(tk.Tk):
         self.db.set_setting("warn_without_realization", "1" if self.warn_realization_var.get() else "0")
         self.db.set_setting("preview_rows", str(preview_rows))
         self.colors = apply_theme(self, THEME_LABELS[self.theme_var.get()])
+        self._configure_help_text_theme()
         messagebox.showinfo("Настройки", "Настройки сохранены", parent=self)
 
     def _preview_theme(self, _event=None) -> None:
         self.colors = apply_theme(self, THEME_LABELS[self.theme_var.get()])
+        self._configure_help_text_theme()
         for tree in (
             self.overview_tree,
             self.breakdown_tree,
