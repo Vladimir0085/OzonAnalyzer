@@ -12,6 +12,12 @@ def report_total_value(calculation) -> float:
     return float(calculation.report_net_profit)
 
 
+def report_total_profitability(calculation) -> float:
+    """Return report profit after tax divided by the cost of goods sold."""
+    cost_sold = float(calculation.totals()["cost_sold"])
+    return report_total_value(calculation) / cost_sold if cost_sold else 0.0
+
+
 def overview_revenue_kpi_values(calculation) -> dict[str, str]:
     """Format paired monetary and relative KPIs for the Overview tab."""
     amounts = calculation.revenue_amounts()
@@ -49,18 +55,31 @@ class ReportTotalsOZPriceAnalyzerApp(OverviewColumnSettingsOZPriceAnalyzerApp):
             master=self,
             value="—",
         )
+        self.kpi_vars["report_total_profitability"] = self.kpi_vars.get(
+            "report_total_profitability"
+        ) or tk.StringVar(master=self, value="—")
         card = ttk.Frame(self.kpi_frame, style="Card.TFrame", padding=(16, 14))
         card.grid(row=1, column=6, sticky="nsew", padx=(5, 0))
         ttk.Label(
             card,
             text="Итог с нераспределёнными после налога",
             style="CardMuted.TLabel",
-        ).grid(row=0, column=0, sticky="w")
+        ).grid(row=0, column=0, columnspan=2, sticky="w")
         ttk.Label(
             card,
             textvariable=self.kpi_vars["report_total"],
             style="Kpi.TLabel",
-        ).grid(row=1, column=0, sticky="w", pady=(5, 0))
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(5, 0))
+        ttk.Label(
+            card,
+            text="Доходность:",
+            style="CardMuted.TLabel",
+        ).grid(row=2, column=0, sticky="w", pady=(7, 0))
+        ttk.Label(
+            card,
+            textvariable=self.kpi_vars["report_total_profitability"],
+            style="Card.TLabel",
+        ).grid(row=2, column=1, sticky="w", padx=(5, 0), pady=(7, 0))
 
     def _install_revenue_share_kpis(self) -> None:
         for child in self.kpi_frame.winfo_children():
@@ -119,13 +138,16 @@ class ReportTotalsOZPriceAnalyzerApp(OverviewColumnSettingsOZPriceAnalyzerApp):
 
     def _refresh_report_total_kpi(self) -> None:
         variable = self.kpi_vars.get("report_total")
-        if variable is None:
+        profitability_variable = self.kpi_vars.get("report_total_profitability")
+        if variable is None or profitability_variable is None:
             return
         calculation = self.overview_calculation
         if calculation is None:
             variable.set("—")
+            profitability_variable.set("—")
             return
         variable.set(_money(report_total_value(calculation)))
+        profitability_variable.set(_percent(report_total_profitability(calculation)))
 
     def _refresh_revenue_share_kpis(self) -> None:
         variables = getattr(self, "revenue_share_kpi_vars", None)
