@@ -18,6 +18,7 @@ from .ui import (
     _percent,
     _result_values,
     _russian_position_word,
+    _russian_report_count,
     _scenario_values,
     filter_product_results,
     filter_scenario_rows,
@@ -274,6 +275,7 @@ class CatalogAndCategoryOZPriceAnalyzerApp(LaptopFriendlyOZPriceAnalyzerApp):
             textvariable=label_var,
             command=lambda k=key: self._choose_categories(k),
             width=21,
+            style="Compact.TButton" if key == "overview" else "TButton",
         ).grid(row=0, column=0, padx=(0, 6))
         ttk.Checkbutton(
             frame,
@@ -406,13 +408,17 @@ class CatalogAndCategoryOZPriceAnalyzerApp(LaptopFriendlyOZPriceAnalyzerApp):
         self._populate_overview()
 
     def _populate_scenario(self) -> None:
-        calculation = self.current_calculation
-        if calculation is None or calculation.run_id is None:
-            return
-
-        prices = self.db.planned_prices(calculation.run_id)
+        calculation = self._active_report_calculation()
         self.scenario_tree.delete(*self.scenario_tree.get_children())
         self.scenario_rows.clear()
+        if calculation is None:
+            for variable in self.scenario_kpi_vars.values():
+                variable.set("—")
+            self.scenario_count_var.set("")
+            return
+
+        target_run_id = self._active_single_run_id()
+        prices = self.db.planned_prices(target_run_id) if target_run_id is not None else {}
         planned_revenue_total = 0.0
         planned_net_total = 0.0
         planned_cost_total = 0.0
@@ -456,7 +462,13 @@ class CatalogAndCategoryOZPriceAnalyzerApp(LaptopFriendlyOZPriceAnalyzerApp):
         self.scenario_kpi_vars["planned_margin"].set(
             _percent(planned_net_total / planned_cost_total if planned_cost_total else 0)
         )
-        self.scenario_count_var.set(f"Показано: {len(visible)} из {len(scenarios)}")
+        scope_note = ""
+        active_count = len(self._active_report_run_ids())
+        if active_count > 1:
+            scope_note = f" · {_russian_report_count(active_count)} · цены только для 1 отчета"
+        self.scenario_count_var.set(
+            f"Показано: {len(visible)} из {len(scenarios)}{scope_note}"
+        )
         self._configure_value_tags(self.scenario_tree)
 
     def _reset_scenario_filters(self) -> None:
