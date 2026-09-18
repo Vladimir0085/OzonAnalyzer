@@ -291,6 +291,9 @@ class OverviewColumnSettingsOZPriceAnalyzerApp(OverviewExportOZPriceAnalyzerApp)
         self._install_scenario_column_settings_button()
 
     def _overview_header(self):
+        header = getattr(self, "overview_header", None)
+        if header is not None:
+            return header
         for child in self.overview_tab.winfo_children():
             if child.winfo_manager() != "grid":
                 continue
@@ -308,6 +311,7 @@ class OverviewColumnSettingsOZPriceAnalyzerApp(OverviewExportOZPriceAnalyzerApp)
         self.overview_columns_button = ttk.Button(
             header,
             text="Настроить столбцы…",
+            style="Compact.TButton",
             command=self.open_overview_column_settings,
         )
         self.overview_columns_button.grid(row=0, column=5, padx=(8, 0))

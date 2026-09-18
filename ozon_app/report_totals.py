@@ -58,28 +58,28 @@ class ReportTotalsOZPriceAnalyzerApp(OverviewColumnSettingsOZPriceAnalyzerApp):
         self.kpi_vars["report_total_profitability"] = self.kpi_vars.get(
             "report_total_profitability"
         ) or tk.StringVar(master=self, value="—")
-        card = ttk.Frame(self.kpi_frame, style="Card.TFrame", padding=(16, 14))
+        card = ttk.Frame(self.kpi_frame, style="Card.TFrame", padding=(8, 5))
         card.grid(row=1, column=6, sticky="nsew", padx=(5, 0))
         ttk.Label(
             card,
             text="Итог с нераспределёнными после налога",
-            style="CardMuted.TLabel",
+            style="CompactCardMuted.TLabel",
         ).grid(row=0, column=0, columnspan=2, sticky="w")
         ttk.Label(
             card,
             textvariable=self.kpi_vars["report_total"],
-            style="Kpi.TLabel",
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(5, 0))
+            style="CompactKpi.TLabel",
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(1, 0))
         ttk.Label(
             card,
             text="Доходность:",
-            style="CardMuted.TLabel",
-        ).grid(row=2, column=0, sticky="w", pady=(7, 0))
+            style="CompactCardMuted.TLabel",
+        ).grid(row=2, column=0, sticky="w", pady=(2, 0))
         ttk.Label(
             card,
             textvariable=self.kpi_vars["report_total_profitability"],
-            style="Card.TLabel",
-        ).grid(row=2, column=1, sticky="w", padx=(5, 0), pady=(7, 0))
+            style="CompactCard.TLabel",
+        ).grid(row=2, column=1, sticky="w", padx=(5, 0), pady=(2, 0))
 
     def _install_revenue_share_kpis(self) -> None:
         for child in self.kpi_frame.winfo_children():
@@ -93,32 +93,33 @@ class ReportTotalsOZPriceAnalyzerApp(OverviewColumnSettingsOZPriceAnalyzerApp):
                 child.grid_configure(row=4)
 
         share_frame = ttk.Frame(self.kpi_frame)
-        share_frame.grid(row=2, column=0, columnspan=7, sticky="ew", pady=(10, 4))
+        share_frame.grid(row=2, column=0, columnspan=7, sticky="ew", pady=(3, 2))
         for column in range(4):
             share_frame.columnconfigure(column, weight=1)
 
         self.revenue_share_kpi_vars = {}
         cards = (
-            ("commission", "Комиссия Ozon: сумма · % от выручки"),
-            ("logistics", "Логистика: сумма · % от выручки"),
-            ("points", "Баллы: сумма · % от выручки"),
-            ("net_margin", "Чистая прибыль, % от выручки"),
+            ("commission", "Комиссия Ozon"),
+            ("logistics", "Логистика"),
+            ("points", "Баллы"),
+            ("net_margin", "Чистая прибыль, %"),
         )
         for index, (key, title) in enumerate(cards):
             variable = tk.StringVar(master=self, value="—")
             self.revenue_share_kpi_vars[key] = variable
-            card = ttk.Frame(share_frame, style="Card.TFrame", padding=(16, 12))
+            card = ttk.Frame(share_frame, style="Card.TFrame", padding=(8, 5))
+            card.columnconfigure(1, weight=1)
             card.grid(
                 row=0,
                 column=index,
                 sticky="nsew",
                 padx=(0 if index == 0 else 5, 0 if index == len(cards) - 1 else 5),
             )
-            ttk.Label(card, text=title, style="CardMuted.TLabel").grid(
+            ttk.Label(card, text=title, style="CompactCardMuted.TLabel").grid(
                 row=0, column=0, sticky="w"
             )
-            ttk.Label(card, textvariable=variable, style="Kpi.TLabel").grid(
-                row=1, column=0, sticky="w", pady=(4, 0)
+            ttk.Label(card, textvariable=variable, style="CompactKpi.TLabel").grid(
+                row=0, column=1, sticky="e", padx=(8, 0)
             )
 
     def _clarify_financial_headings(self) -> None:

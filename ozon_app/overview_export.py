@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from .exporter import export_calculation, suggested_export_name
@@ -15,22 +14,14 @@ class OverviewExportOZPriceAnalyzerApp(HistoryBatchExportOZPriceAnalyzerApp):
         self._install_overview_export_button()
 
     def _install_overview_export_button(self) -> None:
-        overview_header = None
-        for child in self.overview_tab.winfo_children():
-            if child.winfo_manager() != "grid":
-                continue
-            try:
-                if int(child.grid_info().get("row", -1)) == 0:
-                    overview_header = child
-                    break
-            except (TypeError, ValueError, tk.TclError):
-                continue
+        overview_header = getattr(self, "overview_header", None)
         if overview_header is None:
             return
 
         self.overview_export_button = ttk.Button(
             overview_header,
             text="Выгрузить итог XLSX",
+            style="Compact.TButton",
             command=self.export_overview_calculation,
         )
         self.overview_export_button.grid(row=0, column=4, padx=(8, 0))

@@ -75,9 +75,33 @@ def apply_theme(root: tk.Misc, preference: str) -> dict[str, str]:
     style.configure("Muted.TLabel", background=colors["window"], foreground=colors["muted"])
     style.configure("Warning.TLabel", background=colors["window"], foreground=colors["warning"])
     style.configure("CardMuted.TLabel", background=colors["surface"], foreground=colors["muted"])
+    style.configure(
+        "CompactCardMuted.TLabel",
+        background=colors["surface"],
+        foreground=colors["muted"],
+        font=("Segoe UI", 9),
+    )
+    style.configure(
+        "CompactCard.TLabel",
+        background=colors["surface"],
+        foreground=colors["text"],
+        font=("Segoe UI", 9),
+    )
     style.configure("Title.TLabel", font=title_font, background=colors["window"], foreground=colors["text"])
     style.configure("Section.TLabel", font=("Segoe UI Semibold", 13), background=colors["window"], foreground=colors["text"])
+    style.configure(
+        "CompactSection.TLabel",
+        font=("Segoe UI Semibold", 11),
+        background=colors["window"],
+        foreground=colors["text"],
+    )
     style.configure("Kpi.TLabel", font=("Segoe UI Semibold", 18), background=colors["surface"], foreground=colors["text"])
+    style.configure(
+        "CompactKpi.TLabel",
+        font=("Segoe UI Semibold", 12),
+        background=colors["surface"],
+        foreground=colors["text"],
+    )
     style.configure("Positive.Kpi.TLabel", font=("Segoe UI Semibold", 18), background=colors["surface"], foreground=colors["positive"])
     style.configure("Negative.Kpi.TLabel", font=("Segoe UI Semibold", 18), background=colors["surface"], foreground=colors["negative"])
 
@@ -91,6 +115,7 @@ def apply_theme(root: tk.Misc, preference: str) -> dict[str, str]:
         focuscolor=colors["accent"],
     )
     style.map("TButton", background=[("active", colors["hover"]), ("pressed", colors["selection"])])
+    style.configure("Compact.TButton", padding=(10, 4))
     style.configure(
         "Accent.TButton",
         padding=(16, 9),
@@ -100,6 +125,18 @@ def apply_theme(root: tk.Misc, preference: str) -> dict[str, str]:
         font=heading_font,
     )
     style.map("Accent.TButton", background=[("active", colors["accent"]), ("pressed", colors["accent"])])
+    style.configure(
+        "CompactAccent.TButton",
+        padding=(10, 5),
+        background=colors["accent"],
+        foreground=colors["accent_text"],
+        bordercolor=colors["accent"],
+        font=heading_font,
+    )
+    style.map(
+        "CompactAccent.TButton",
+        background=[("active", colors["accent"]), ("pressed", colors["accent"])],
+    )
     style.configure("Danger.TButton", foreground=colors["negative"])
 
     style.configure(
@@ -110,6 +147,7 @@ def apply_theme(root: tk.Misc, preference: str) -> dict[str, str]:
         bordercolor=colors["border"],
         padding=7,
     )
+    style.configure("Compact.TEntry", padding=4)
     style.configure(
         "TCombobox",
         fieldbackground=colors["surface_alt"],
@@ -126,6 +164,7 @@ def apply_theme(root: tk.Misc, preference: str) -> dict[str, str]:
         selectbackground=[("readonly", colors["surface_alt"])],
         selectforeground=[("readonly", colors["text"])],
     )
+    style.configure("Compact.TCombobox", padding=3)
     style.configure("TSpinbox", fieldbackground=colors["surface_alt"], foreground=colors["text"], padding=6)
     style.configure("TCheckbutton", background=colors["window"], foreground=colors["text"], padding=4)
     style.map("TCheckbutton", background=[("active", colors["window"])])

@@ -17,12 +17,14 @@ class _GridSplitter:
     """Static table toolbar that keeps controls separate from the table.
 
     The component intentionally preserves the historical API used by display
-    modes, but vertical dragging is disabled. The table simply expands into the
-    remaining grid space, so it cannot be dragged over buttons or filters.
+    modes, but vertical dragging is disabled. By default the table expands into
+    the remaining space; an optional fraction keeps Overview panes proportional
+    at every window size.
     """
 
     def __init__(self, owner, parent, *, row: int, table_row: int, absorb_row: int,
-                 min_upper: int, min_table: int, compact=None, protected_rows=()):
+                 min_upper: int, min_table: int, compact=None, protected_rows=(),
+                 table_fraction: float | None = None):
         self.owner = owner
         self.parent = parent
         self.row = row
@@ -32,6 +34,11 @@ class _GridSplitter:
         self.min_table = min_table
         self.compact = compact
         self.protected_rows = tuple(int(value) for value in protected_rows)
+        self.table_fraction = (
+            None
+            if table_fraction is None
+            else max(0.4, min(float(table_fraction), 0.7))
+        )
         self.dragging = False
         self.suspended = False
         self.table_height: int | None = None
@@ -112,6 +119,31 @@ class _GridSplitter:
         if total <= 1:
             return
 
+        if self.table_fraction is not None:
+            # Overview uses the same adaptive split as the WB application: the
+            # compact controls and the table receive equal shares of the usable
+            # area at every window and monitor size.
+            group = f"split_{id(self.parent)}"
+            upper_weight = max(1, round((1.0 - self.table_fraction) * 100))
+            table_weight = max(1, round(self.table_fraction * 100))
+            self.table_height = None
+            self.parent.rowconfigure(
+                self.absorb_row,
+                weight=upper_weight,
+                minsize=0,
+                uniform=group,
+            )
+            self.parent.rowconfigure(
+                self.table_row,
+                weight=table_weight,
+                minsize=max(110, min(max(int(self.min_table), 0), 150)),
+                uniform=group,
+            )
+            if self.compact is not None:
+                available = max(0, total - int(self.bar.winfo_reqheight()))
+                self.compact(int(round(available * (1.0 - self.table_fraction))))
+            return
+
         # Release the old fixed-pixel table constraint. Controls keep their
         # natural/requested height; the table receives only the remaining space.
         self.table_height = None
@@ -146,26 +178,21 @@ class ResizableOZPriceAnalyzerApp(OZPriceAnalyzerApp):
 
     def _build_overview_tab(self) -> None:
         super()._build_overview_tab()
-        _move_tree_container(self.overview_tree, row=4)
-        self.overview_tab.rowconfigure(3, weight=0)
-        self.overview_tab.rowconfigure(4, weight=1)
+        _move_tree_container(self.overview_tree, row=2)
+        self.overview_tab.rowconfigure(1, weight=0)
+        self.overview_tab.rowconfigure(2, weight=1)
 
         def compact(upper: int):
             _hide_label_with_text(
                 self.kpi_frame,
                 "Нераспределенные доходы / расходы сюда не включаются",
-                upper < 300,
+                upper < 210,
             )
-            for widget in self.kpi_frame.winfo_children():
-                if isinstance(widget, ttk.Frame):
-                    try:
-                        widget.configure(padding=(10, 7) if upper < 315 else (16, 12))
-                    except tk.TclError:
-                        pass
 
         self._overview_splitter = _GridSplitter(
-            self, self.overview_tab, row=3, table_row=4, absorb_row=2,
-            min_upper=255, min_table=190, compact=compact,
+            self, self.overview_tab, row=1, table_row=2, absorb_row=0,
+            min_upper=210, min_table=190, compact=compact,
+            protected_rows=(0,), table_fraction=0.5,
         )
 
     def _build_scenario_tab(self) -> None:

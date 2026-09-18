@@ -257,11 +257,15 @@ class OZPriceAnalyzerApp(tk.Tk):
 
     def _build_overview_tab(self) -> None:
         self.overview_tab.columnconfigure(0, weight=1)
-        self.overview_tab.rowconfigure(3, weight=1)
-        overview_header = ttk.Frame(self.overview_tab)
-        overview_header.grid(row=0, column=0, sticky="ew", pady=(10, 8))
+        self.overview_tab.rowconfigure(1, weight=1)
+        self.overview_upper = ttk.Frame(self.overview_tab)
+        self.overview_upper.grid(row=0, column=0, sticky="nsew")
+        self.overview_upper.columnconfigure(0, weight=1)
+        overview_header = ttk.Frame(self.overview_upper)
+        overview_header.grid(row=0, column=0, sticky="ew", pady=(4, 4))
         overview_header.columnconfigure(1, weight=1)
-        ttk.Label(overview_header, text="Итоговый отчет", style="Section.TLabel").grid(
+        self.overview_header = overview_header
+        ttk.Label(overview_header, text="Итоговый отчет", style="CompactSection.TLabel").grid(
             row=0, column=0, sticky="w"
         )
         self.overview_scope_var = tk.StringVar(value="Текущий отчет")
@@ -273,21 +277,22 @@ class OZPriceAnalyzerApp(tk.Tk):
         ttk.Button(
             overview_header,
             text="Выбрать отчеты…",
-            style="Accent.TButton",
+            style="CompactAccent.TButton",
             command=self.choose_overview_reports,
         ).grid(row=0, column=2, padx=(0, 8))
         ttk.Button(
             overview_header,
             text="Только текущий",
+            style="Compact.TButton",
             command=self.use_current_report_in_overview,
         ).grid(row=0, column=3)
-        self.kpi_frame = ttk.Frame(self.overview_tab)
-        self.kpi_frame.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        self.kpi_frame = ttk.Frame(self.overview_upper)
+        self.kpi_frame.grid(row=1, column=0, sticky="ew", pady=(0, 4))
         for column in range(6):
             self.kpi_frame.columnconfigure(column, weight=1)
         self.overview_totals_title_var = tk.StringVar(value="Итоги по отчету")
         ttk.Label(self.kpi_frame, textvariable=self.overview_totals_title_var, style="Muted.TLabel").grid(
-            row=0, column=0, columnspan=6, sticky="w", pady=(0, 6)
+            row=0, column=0, columnspan=6, sticky="w", pady=(0, 2)
         )
         self.kpi_vars: dict[str, tk.StringVar] = {}
         cards = [
@@ -300,21 +305,21 @@ class OZPriceAnalyzerApp(tk.Tk):
         ]
         for index, (key, title) in enumerate(cards):
             self.kpi_vars[key] = tk.StringVar(value="—")
-            card = ttk.Frame(self.kpi_frame, style="Card.TFrame", padding=(16, 14))
+            card = ttk.Frame(self.kpi_frame, style="Card.TFrame", padding=(8, 5))
             card.grid(row=1, column=index, sticky="nsew", padx=(0 if index == 0 else 5, 0 if index == 5 else 5))
-            ttk.Label(card, text=title, style="CardMuted.TLabel").grid(row=0, column=0, sticky="w")
-            ttk.Label(card, textvariable=self.kpi_vars[key], style="Kpi.TLabel").grid(
-                row=1, column=0, sticky="w", pady=(5, 0)
+            ttk.Label(card, text=title, style="CompactCardMuted.TLabel").grid(row=0, column=0, sticky="w")
+            ttk.Label(card, textvariable=self.kpi_vars[key], style="CompactKpi.TLabel").grid(
+                row=1, column=0, sticky="w", pady=(1, 0)
             )
 
         category_header = ttk.Frame(self.kpi_frame)
-        category_header.grid(row=2, column=0, columnspan=6, sticky="ew", pady=(14, 6))
+        category_header.grid(row=2, column=0, columnspan=6, sticky="ew", pady=(4, 2))
         category_header.columnconfigure(0, weight=1)
         self.category_summary_title_var = tk.StringVar(value="Итоги по товарам выбранной категории")
         ttk.Label(
             category_header,
             textvariable=self.category_summary_title_var,
-            style="Section.TLabel",
+            style="CompactSection.TLabel",
         ).grid(row=0, column=0, sticky="w")
         ttk.Label(
             category_header,
@@ -333,37 +338,51 @@ class OZPriceAnalyzerApp(tk.Tk):
         ]
         for index, (key, title) in enumerate(category_cards):
             self.category_kpi_vars[key] = tk.StringVar(value="—")
-            card = ttk.Frame(self.kpi_frame, style="Card.TFrame", padding=(16, 12))
+            card = ttk.Frame(self.kpi_frame, style="Card.TFrame", padding=(8, 5))
             card.grid(
                 row=3,
                 column=index,
                 sticky="nsew",
                 padx=(0 if index == 0 else 5, 0 if index == 5 else 5),
             )
-            ttk.Label(card, text=title, style="CardMuted.TLabel").grid(row=0, column=0, sticky="w")
-            ttk.Label(card, textvariable=self.category_kpi_vars[key], style="Kpi.TLabel").grid(
-                row=1, column=0, sticky="w", pady=(4, 0)
+            ttk.Label(card, text=title, style="CompactCardMuted.TLabel").grid(row=0, column=0, sticky="w")
+            ttk.Label(card, textvariable=self.category_kpi_vars[key], style="CompactKpi.TLabel").grid(
+                row=1, column=0, sticky="w", pady=(1, 0)
             )
 
-        filters = ttk.Frame(self.overview_tab)
-        filters.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        filters = ttk.Frame(self.overview_upper)
+        filters.grid(row=2, column=0, sticky="ew", pady=(0, 4))
         filters.columnconfigure(10, weight=1)
         ttk.Label(filters, text="Категория:").grid(row=0, column=0, padx=(0, 6))
         self.overview_category_var = tk.StringVar(value=CATEGORY_ALL)
         self.overview_category_combo = ttk.Combobox(
-            filters, textvariable=self.overview_category_var, state="readonly", width=24
+            filters,
+            textvariable=self.overview_category_var,
+            state="readonly",
+            width=24,
+            style="Compact.TCombobox",
         )
         self.overview_category_combo.grid(row=0, column=1, padx=(0, 14))
         self.overview_category_combo.bind("<<ComboboxSelected>>", lambda _event: self._populate_overview())
         ttk.Label(filters, text="Артикул:").grid(row=0, column=2, padx=(0, 6))
         self.overview_article_var = tk.StringVar()
-        overview_search = ttk.Entry(filters, textvariable=self.overview_article_var, width=20)
+        overview_search = ttk.Entry(
+            filters,
+            textvariable=self.overview_article_var,
+            width=20,
+            style="Compact.TEntry",
+        )
         overview_search.grid(row=0, column=3, padx=(0, 14))
         overview_search.bind("<KeyRelease>", lambda _event: self._populate_overview())
         ttk.Label(filters, text="Сортировать:").grid(row=0, column=4, padx=(0, 6))
         self.overview_sort_var = tk.StringVar(value=SORT_NONE)
         overview_sort = ttk.Combobox(
-            filters, textvariable=self.overview_sort_var, values=SORT_METRICS, state="readonly", width=21
+            filters,
+            textvariable=self.overview_sort_var,
+            values=SORT_METRICS,
+            state="readonly",
+            width=21,
+            style="Compact.TCombobox",
         )
         overview_sort.grid(row=0, column=5, padx=(0, 8))
         overview_sort.bind("<<ComboboxSelected>>", lambda _event: self._populate_overview())
@@ -374,10 +393,16 @@ class OZPriceAnalyzerApp(tk.Tk):
             values=(SORT_ASCENDING, SORT_DESCENDING),
             state="readonly",
             width=24,
+            style="Compact.TCombobox",
         )
         overview_direction.grid(row=0, column=6, padx=(0, 8))
         overview_direction.bind("<<ComboboxSelected>>", lambda _event: self._populate_overview())
-        ttk.Button(filters, text="Сбросить", command=self._reset_overview_filters).grid(row=0, column=7)
+        ttk.Button(
+            filters,
+            text="Сбросить",
+            style="Compact.TButton",
+            command=self._reset_overview_filters,
+        ).grid(row=0, column=7)
         self.overview_count_var = tk.StringVar()
         ttk.Label(filters, textvariable=self.overview_count_var, style="Muted.TLabel").grid(
             row=0, column=10, sticky="e"
@@ -387,7 +412,7 @@ class OZPriceAnalyzerApp(tk.Tk):
         headings = [heading for _column, heading, _width in OVERVIEW_COLUMN_SPECS]
         widths = [width for _column, _heading, width in OVERVIEW_COLUMN_SPECS]
         self.overview_tree = self._create_tree(
-            self.overview_tab, columns, headings, row=3, widths=widths
+            self.overview_tab, columns, headings, row=1, widths=widths
         )
 
     def _build_sources_tab(self) -> None:
@@ -1096,11 +1121,8 @@ class OZPriceAnalyzerApp(tk.Tk):
         self.current_calculation = self.db.load_calculation(run_id)
         if not self.overview_selection_explicit:
             self.overview_run_ids = {run_id}
-        self._refresh_overview_calculation()
-        self._populate_sources()
-        self._populate_breakdown()
+        self._refresh_active_report_views()
         self._populate_guide()
-        self._populate_scenario()
         self._populate_quality()
         status = f"Открыт отчет №{self._run_number(run_id)}: {_calculation_period(self.current_calculation)}"
         if self.overview_selection_explicit:
@@ -1110,7 +1132,49 @@ class OZPriceAnalyzerApp(tk.Tk):
     def _on_run_selected(self, _event=None) -> None:
         run_id = self.run_display_to_id.get(self.run_var.get())
         if run_id is not None:
+            # The most recently used selector owns the active report scope.
+            # Choosing the top combobox therefore replaces an earlier multi-selection.
+            self.overview_selection_explicit = False
+            self.overview_run_ids = {run_id}
             self.select_run(run_id)
+
+    def _active_report_run_ids(self) -> list[int]:
+        """Return the active report scope in history order."""
+        selected = set(self.__dict__.get("overview_run_ids", set()))
+        ordered = [
+            run.id
+            for run in self.__dict__.get("overview_runs", [])
+            if run.id in selected
+        ]
+        ordered.extend(sorted(selected.difference(ordered)))
+        if not ordered and self.__dict__.get("current_run_id") is not None:
+            ordered.append(self.current_run_id)
+        return ordered
+
+    def _active_report_calculation(self) -> RunCalculation | None:
+        calculation = self.__dict__.get("overview_calculation")
+        return calculation if calculation is not None else self.__dict__.get("current_calculation")
+
+    def _active_single_run_id(self, *, notify: bool = False) -> int | None:
+        run_ids = self._active_report_run_ids()
+        if len(run_ids) == 1:
+            return run_ids[0]
+        if notify:
+            messagebox.showinfo(
+                "Сценарий цены",
+                "Изменение плановых цен доступно при выборе одного отчета.\n\n"
+                "Выберите отчет в верхнем списке или оставьте один отчет в окне "
+                "«Выбрать отчеты…».",
+                parent=self,
+            )
+        return None
+
+    def _refresh_active_report_views(self) -> None:
+        """Refresh every tab whose data follows the active report scope."""
+        self._refresh_overview_calculation()
+        self._populate_sources()
+        self._populate_breakdown()
+        self._populate_scenario()
 
     def _run_number(self, run_id: int | None) -> str:
         if run_id is None:
@@ -1208,7 +1272,7 @@ class OZPriceAnalyzerApp(tk.Tk):
             return
         self.overview_run_ids = set(dialog.selected_run_ids)
         self.overview_selection_explicit = True
-        self._refresh_overview_calculation()
+        self._refresh_active_report_views()
         self.status_var.set(
             f"Обзор сформирован по {len(self.overview_run_ids)} отчетам: "
             f"{_calculation_period(self.overview_calculation)}"
@@ -1219,7 +1283,7 @@ class OZPriceAnalyzerApp(tk.Tk):
             return
         self.overview_selection_explicit = False
         self.overview_run_ids = {self.current_run_id}
-        self._refresh_overview_calculation()
+        self._refresh_active_report_views()
         self.status_var.set(
             f"Обзор показывает текущий отчет №{self._run_number(self.current_run_id)}"
         )
@@ -1268,13 +1332,13 @@ class OZPriceAnalyzerApp(tk.Tk):
         self._populate_overview()
 
     def _populate_sources(self) -> None:
-        if self.current_run_id is None:
-            return
-        sources = self.db.list_source_files(self.current_run_id)
         self.source_tree.delete(*self.source_tree.get_children())
         self.source_by_iid.clear()
-        for row in sources:
-            iid = str(row["id"])
+        sources: list[tuple[int, dict[str, object]]] = []
+        for run_id in self._active_report_run_ids():
+            sources.extend((run_id, row) for row in self.db.list_source_files(run_id))
+        for run_id, row in sources:
+            iid = f"{run_id}:{row['id']}"
             self.source_by_iid[iid] = row
             report_type = {
                 "ACCRUAL": "Начисления",
@@ -1289,10 +1353,13 @@ class OZPriceAnalyzerApp(tk.Tk):
                 values=(row["original_name"], report_type, row["row_count"], _money(float(row["total_amount"])), period, str(row["file_hash"])[:24]),
             )
         if sources:
-            first = str(sources[0]["id"])
+            first_run_id, first_row = sources[0]
+            first = f"{first_run_id}:{first_row['id']}"
             self.source_tree.selection_set(first)
             self.source_tree.focus(first)
             self._on_source_selected()
+        else:
+            self.clear_xlsx_preview()
 
     def _on_source_selected(self, _event=None) -> None:
         selection = self.source_tree.selection()
@@ -1406,10 +1473,10 @@ class OZPriceAnalyzerApp(tk.Tk):
         self.preview_tree = tree
 
     def _populate_breakdown(self) -> None:
-        calculation = self.current_calculation
+        calculation = self._active_report_calculation()
+        self.breakdown_tree.delete(*self.breakdown_tree.get_children())
         if calculation is None:
             return
-        self.breakdown_tree.delete(*self.breakdown_tree.get_children())
         total = calculation.unallocated_total
         for accrual_type, (count, amount) in calculation.unallocated.items():
             share = amount / total if total else 0.0
@@ -1456,12 +1523,16 @@ class OZPriceAnalyzerApp(tk.Tk):
             )
 
     def _populate_scenario(self) -> None:
-        calculation = self.current_calculation
-        if calculation is None or calculation.run_id is None:
-            return
-        prices = self.db.planned_prices(calculation.run_id)
+        calculation = self._active_report_calculation()
         self.scenario_tree.delete(*self.scenario_tree.get_children())
         self.scenario_rows.clear()
+        if calculation is None:
+            for variable in self.scenario_kpi_vars.values():
+                variable.set("—")
+            self.scenario_count_var.set("")
+            return
+        target_run_id = self._active_single_run_id()
+        prices = self.db.planned_prices(target_run_id) if target_run_id is not None else {}
         planned_revenue_total = 0.0
         planned_net_total = 0.0
         planned_cost_total = 0.0
@@ -1497,7 +1568,13 @@ class OZPriceAnalyzerApp(tk.Tk):
         self.scenario_kpi_vars["planned_revenue"].set(_money(planned_revenue_total))
         self.scenario_kpi_vars["planned_net"].set(_money(planned_net_total))
         self.scenario_kpi_vars["planned_margin"].set(_percent(planned_net_total / planned_cost_total if planned_cost_total else 0))
-        self.scenario_count_var.set(f"Показано: {len(visible)} из {len(scenarios)}")
+        scope_note = ""
+        active_count = len(self._active_report_run_ids())
+        if active_count > 1:
+            scope_note = f" · {_russian_report_count(active_count)} · цены только для 1 отчета"
+        self.scenario_count_var.set(
+            f"Показано: {len(visible)} из {len(scenarios)}{scope_note}"
+        )
         self._configure_value_tags(self.scenario_tree)
 
     def _reset_scenario_filters(self) -> None:
@@ -1515,7 +1592,8 @@ class OZPriceAnalyzerApp(tk.Tk):
         self.planned_price_var.set(_plain_number(row.planned_price) if row and row.planned_price is not None else "")
 
     def apply_planned_price(self) -> None:
-        if self.current_run_id is None:
+        run_id = self._active_single_run_id(notify=True)
+        if run_id is None:
             return
         selection = self.scenario_tree.selection()
         if not selection:
@@ -1528,24 +1606,27 @@ class OZPriceAnalyzerApp(tk.Tk):
         except ValueError:
             messagebox.showerror("Плановая цена", "Введите неотрицательную цену", parent=self)
             return
-        self.db.save_planned_price(self.current_run_id, selection[0], value)
+        self.db.save_planned_price(run_id, selection[0], value)
         self._populate_scenario()
         self.scenario_tree.selection_set(selection[0])
 
     def apply_batch_percent(self) -> None:
-        if self.current_run_id is None or self.current_calculation is None:
+        run_id = self._active_single_run_id(notify=True)
+        calculation = self._active_report_calculation()
+        if run_id is None or calculation is None:
             return
         percent = self._scenario_percent()
         if percent is None:
             return
-        for result in self.current_calculation.products:
+        for result in calculation.products:
             current = result.average_price()
             if current is not None:
-                self.db.save_planned_price(self.current_run_id, result.article, current * (1 + percent))
+                self.db.save_planned_price(run_id, result.article, current * (1 + percent))
         self._populate_scenario()
 
     def apply_selected_percent(self) -> None:
-        if self.current_run_id is None:
+        run_id = self._active_single_run_id(notify=True)
+        if run_id is None:
             return
         selection = self.scenario_tree.selection()
         if not selection:
@@ -1563,7 +1644,7 @@ class OZPriceAnalyzerApp(tk.Tk):
         percent = self._scenario_percent()
         if percent is None:
             return
-        self.db.save_planned_price(self.current_run_id, article, row.current_price * (1 + percent))
+        self.db.save_planned_price(run_id, article, row.current_price * (1 + percent))
         self._populate_scenario()
         self.scenario_tree.selection_set(article)
         self.scenario_tree.focus(article)
@@ -1580,10 +1661,11 @@ class OZPriceAnalyzerApp(tk.Tk):
         return percent
 
     def reset_scenario(self) -> None:
-        if self.current_run_id is None:
+        run_id = self._active_single_run_id(notify=True)
+        if run_id is None:
             return
         if messagebox.askyesno("Сбросить сценарий", "Вернуть плановые цены к текущим средним?", parent=self):
-            self.db.clear_planned_prices(self.current_run_id)
+            self.db.clear_planned_prices(run_id)
             self._populate_scenario()
 
     def refresh_history(self, selected_run_id: int | None = None) -> None:
@@ -2006,8 +2088,7 @@ class OZPriceAnalyzerApp(tk.Tk):
         self.refresh_products()
         if self.current_run_id is not None:
             self.current_calculation = self.db.load_calculation(self.current_run_id)
-            self._refresh_overview_calculation()
-            self._populate_scenario()
+            self._refresh_active_report_views()
 
     def open_cost_catalog_editor(self) -> None:
         dialog = CostCatalogEditorDialog(self, self.db.list_products())
