@@ -45,6 +45,8 @@ class HelpContentTests(unittest.TestCase):
             "Чистая прибыль, % от выручки = Итог с нераспределёнными",
             text,
         )
+        self.assertIn("Одинаковый активный набор используют вкладки", text)
+        self.assertIn("изменять и сохранять плановые цены можно при выборе одного отчёта", text)
 
     def test_base_ui_exposes_help_tab_builder(self) -> None:
         self.assertTrue(callable(getattr(OZPriceAnalyzerApp, "_build_help_tab", None)))
