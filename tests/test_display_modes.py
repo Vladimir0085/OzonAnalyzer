@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import inspect
 import unittest
 
 from ozon_app.display_modes import fitted_window_size, resolve_ui_scale
-from ozon_app.resizable_layout import _minimum_upper_height
+from ozon_app.resizable_layout import ResizableOZPriceAnalyzerApp, _minimum_upper_height
+from ozon_app.ui import OZPriceAnalyzerApp
 
 
 class DisplayModeTests(unittest.TestCase):
@@ -25,6 +27,14 @@ class DisplayModeTests(unittest.TestCase):
         self.assertEqual(_minimum_upper_height(265, []), 265)
         self.assertEqual(_minimum_upper_height(212, [24, 220, 92]), 348)
         self.assertEqual(_minimum_upper_height(400, [24, 220, 92]), 400)
+
+    def test_overview_requests_an_equal_adaptive_table_split(self) -> None:
+        base_source = inspect.getsource(OZPriceAnalyzerApp._build_overview_tab)
+        layout_source = inspect.getsource(ResizableOZPriceAnalyzerApp._build_overview_tab)
+
+        self.assertIn("table_fraction=0.5", layout_source)
+        self.assertIn("CompactKpi.TLabel", base_source)
+        self.assertIn("Compact.TCombobox", base_source)
 
 
 if __name__ == "__main__":
