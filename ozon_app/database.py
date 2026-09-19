@@ -688,7 +688,8 @@ class Database:
                     SELECT run_id,
                            SUM(commission) AS commission,
                            SUM(
-                               delivery + logistics + reverse_logistics + returns_cancels
+                               processing + delivery + logistics
+                               + reverse_logistics + returns_cancels
                            ) AS logistics,
                            SUM(points) AS points
                     FROM product_results
