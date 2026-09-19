@@ -71,6 +71,10 @@ class DatabaseExporterTests(unittest.TestCase):
                         units=2,
                         revenue_no_points=500,
                         commission=-100,
+                        delivery=-10,
+                        logistics=-20,
+                        reverse_logistics=-5,
+                        returns_cancels=-15,
                         financial_result=400,
                     )
                 ],
@@ -89,7 +93,7 @@ class DatabaseExporterTests(unittest.TestCase):
             self.assertAlmostEqual(report_total_value(loaded), 130.0)
             summary = database.list_runs()[0]
             self.assertAlmostEqual(summary.commission_share, 0.2)
-            self.assertEqual(summary.logistics_share, 0.0)
+            self.assertAlmostEqual(summary.logistics_share, 0.1)
             self.assertEqual(summary.points_share, 0.0)
             self.assertAlmostEqual(summary.net_margin, 0.26)
             self.assertAlmostEqual(summary.profitability, 0.9)
@@ -121,11 +125,17 @@ class DatabaseExporterTests(unittest.TestCase):
                 self.assertEqual(sheet["AJ6"].value, "Баллы, % от выручки")
                 self.assertEqual(sheet["AK6"].value, "Чистая прибыль, % от выручки")
                 self.assertEqual(sheet["AH7"].value, "=IFERROR(-V7/R7,0)")
-                self.assertEqual(sheet["AI7"].value, "=IFERROR(-(Y7+Z7)/R7,0)")
+                self.assertEqual(
+                    sheet["AI7"].value,
+                    "=IFERROR(-(X7+Y7+Z7+AA7)/R7,0)",
+                )
                 self.assertEqual(sheet["AJ7"].value, "=IFERROR(U7/R7,0)")
                 self.assertEqual(sheet["AK7"].value, "=IFERROR((L7+$H$4-$J$4)/R7,0)")
                 self.assertEqual(sheet["AH8"].value, "=IFERROR(-V8/R8,0)")
-                self.assertEqual(sheet["AI8"].value, "=IFERROR(-(Y8+Z8)/R8,0)")
+                self.assertEqual(
+                    sheet["AI8"].value,
+                    "=IFERROR(-(X8+Y8+Z8+AA8)/R8,0)",
+                )
                 self.assertEqual(sheet["AJ8"].value, "=IFERROR(U8/R8,0)")
                 self.assertEqual(sheet["AK8"].value, "=IFERROR(L8/R8,0)")
                 self.assertEqual(sheet["AH8"].number_format, "0.00%")

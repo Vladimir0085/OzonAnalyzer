@@ -687,7 +687,9 @@ class Database:
                 LEFT JOIN (
                     SELECT run_id,
                            SUM(commission) AS commission,
-                           SUM(logistics + reverse_logistics) AS logistics,
+                           SUM(
+                               delivery + logistics + reverse_logistics + returns_cancels
+                           ) AS logistics,
                            SUM(points) AS points
                     FROM product_results
                     GROUP BY run_id

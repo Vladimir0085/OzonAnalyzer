@@ -180,9 +180,19 @@ class ProductResult:
         revenue = self.revenue_including_points
         return -self.commission / revenue if revenue else 0.0
 
+    @property
+    def logistics_total(self) -> float:
+        """Signed total of all delivery and return logistics charges."""
+        return (
+            self.delivery
+            + self.logistics
+            + self.reverse_logistics
+            + self.returns_cancels
+        )
+
     def logistics_share(self) -> float:
         revenue = self.revenue_including_points
-        return -(self.logistics + self.reverse_logistics) / revenue if revenue else 0.0
+        return -self.logistics_total / revenue if revenue else 0.0
 
     def points_share(self) -> float:
         revenue = self.revenue_including_points
@@ -258,9 +268,7 @@ class RunCalculation:
             }
         return {
             "commission_share": -sum(item.commission for item in self.products) / revenue,
-            "logistics_share": -sum(
-                item.logistics + item.reverse_logistics for item in self.products
-            ) / revenue,
+            "logistics_share": -sum(item.logistics_total for item in self.products) / revenue,
             "points_share": sum(item.points for item in self.products) / revenue,
             "net_margin": self.report_net_profit / revenue,
         }
@@ -269,9 +277,7 @@ class RunCalculation:
         """Return the monetary numerators used by the revenue-share KPIs."""
         return {
             "commission": -sum(item.commission for item in self.products),
-            "logistics": -sum(
-                item.logistics + item.reverse_logistics for item in self.products
-            ),
+            "logistics": -sum(item.logistics_total for item in self.products),
             "points": sum(item.points for item in self.products),
         }
 
