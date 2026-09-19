@@ -8,12 +8,13 @@ from ozon_app.ui import _result_values
 
 
 class RevenueShareMetricTests(unittest.TestCase):
-    def test_august_logistics_amount_includes_all_four_report_columns(self) -> None:
+    def test_august_logistics_amount_includes_all_five_report_columns(self) -> None:
         product = ProductResult(
             article="AUGUST",
             name="Август 2026",
             material_cost=0,
             labor_cost=0,
+            processing=-1_010.00,
             delivery=-1_378.85,
             logistics=-5_526.49,
             reverse_logistics=-309.08,
@@ -30,7 +31,7 @@ class RevenueShareMetricTests(unittest.TestCase):
             accrual_stats={},
         )
 
-        self.assertAlmostEqual(calculation.revenue_amounts()["logistics"], 7_214.42)
+        self.assertAlmostEqual(calculation.revenue_amounts()["logistics"], 8_224.42)
 
     def test_product_and_report_shares_use_revenue_including_points(self) -> None:
         product = ProductResult(
@@ -43,6 +44,7 @@ class RevenueShareMetricTests(unittest.TestCase):
             partner_programs=100,
             points=100,
             commission=-200,
+            processing=-10,
             delivery=-30,
             logistics=-80,
             reverse_logistics=-20,
@@ -61,35 +63,35 @@ class RevenueShareMetricTests(unittest.TestCase):
         )
 
         self.assertAlmostEqual(product.commission_share(), 0.2)
-        self.assertEqual(product.logistics_total, -140)
-        self.assertAlmostEqual(product.logistics_share(), 0.14)
+        self.assertEqual(product.logistics_total, -150)
+        self.assertAlmostEqual(product.logistics_share(), 0.15)
         self.assertAlmostEqual(product.points_share(), 0.1)
         self.assertAlmostEqual(product.net_margin(0.04), 0.364)
         self.assertEqual(
             calculation.revenue_shares(),
             {
                 "commission_share": 0.2,
-                "logistics_share": 0.14,
+                "logistics_share": 0.15,
                 "points_share": 0.1,
                 "net_margin": 0.314,
             },
         )
         self.assertEqual(
             calculation.revenue_amounts(),
-            {"commission": 200, "logistics": 140, "points": 100},
+            {"commission": 200, "logistics": 150, "points": 100},
         )
         self.assertEqual(
             overview_revenue_kpi_values(calculation),
             {
                 "commission": "200.00 ₽ · 20.00%",
-                "logistics": "140.00 ₽ · 14.00%",
+                "logistics": "150.00 ₽ · 15.00%",
                 "points": "100.00 ₽ · 10.00%",
                 "net_margin": "31.40%",
             },
         )
         self.assertEqual(
             _result_values(product, 0.04)[-4:],
-            ("20.00%", "14.00%", "10.00%", "36.40%"),
+            ("20.00%", "15.00%", "10.00%", "36.40%"),
         )
 
     def test_zero_revenue_returns_zero_shares(self) -> None:
