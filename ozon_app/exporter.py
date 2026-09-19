@@ -99,7 +99,7 @@ def _fill_report_sheet(ws, calculation: RunCalculation, planned_prices: dict[str
         letter = ws.cell(1, column_number).column_letter
         ws[f"{letter}7"] = f"=SUM({letter}8:{letter}{last_row})"
     ws["AH7"] = "=IFERROR(-V7/R7,0)"
-    ws["AI7"] = "=IFERROR(-(X7+Y7+Z7+AA7)/R7,0)"
+    ws["AI7"] = "=IFERROR(-(W7+X7+Y7+Z7+AA7)/R7,0)"
     ws["AJ7"] = "=IFERROR(U7/R7,0)"
     ws["AK7"] = "=IFERROR((L7+$H$4-$J$4)/R7,0)"
     ws["AL7"] = "=IFERROR(R7/Q7,\"\")"
@@ -155,7 +155,9 @@ def _write_product_row(
         ws[f"{column}{row}"] = getattr(result, field)
     ws[f"AG{row}"] = f"=SUM(S{row}:AF{row})"
     ws[f"AH{row}"] = f"=IFERROR(-V{row}/R{row},0)"
-    ws[f"AI{row}"] = f"=IFERROR(-(X{row}+Y{row}+Z{row}+AA{row})/R{row},0)"
+    ws[f"AI{row}"] = (
+        f"=IFERROR(-(W{row}+X{row}+Y{row}+Z{row}+AA{row})/R{row},0)"
+    )
     ws[f"AJ{row}"] = f"=IFERROR(U{row}/R{row},0)"
     ws[f"AK{row}"] = f"=IFERROR(L{row}/R{row},0)"
 
