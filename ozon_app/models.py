@@ -182,9 +182,10 @@ class ProductResult:
 
     @property
     def logistics_total(self) -> float:
-        """Signed total of all delivery and return logistics charges."""
+        """Signed total of shipment processing, delivery and return charges."""
         return (
-            self.delivery
+            self.processing
+            + self.delivery
             + self.logistics
             + self.reverse_logistics
             + self.returns_cancels
