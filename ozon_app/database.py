@@ -14,6 +14,9 @@ from .models import ParsedSource, Product, ProductResult, RunCalculation, RunSum
 from .ordering import default_article_order, insert_at_group_end
 
 
+DOUBLE_COUNT_EVENT = "Двойной учёт акта"
+
+
 def _normalized_accrual_type(value: str) -> str:
     return normalize_text(value).replace("ё", "е")
 
@@ -635,6 +638,12 @@ class Database:
                     "VALUES (?, 'Предупреждение', 'Несовпадение периодов', ?)",
                     (run_id, message),
                 )
+            for message in calculation.double_count_warnings:
+                db.execute(
+                    "INSERT INTO quality_events(run_id, severity, event_type, message) "
+                    "VALUES (?, 'Предупреждение', ?, ?)",
+                    (run_id, DOUBLE_COUNT_EVENT, message),
+                )
             hash_counts = Counter(source.file_hash for source in calculation.source_files)
             run_names = {
                 int(row["id"]): str(row["report_name"])
@@ -818,6 +827,11 @@ class Database:
             for row in events
             if row["event_type"] == "Несовпадение периодов"
         ]
+        double_count_warnings = [
+            str(row["message"])
+            for row in events
+            if row["event_type"] == DOUBLE_COUNT_EVENT
+        ]
         return RunCalculation(
             run_id=run_id,
             period_start=_parse_date(run["period_start"]),
@@ -837,6 +851,7 @@ class Database:
             taxable_unallocated_income_override=float(
                 run["taxable_unallocated_income"]
             ),
+            double_count_warnings=double_count_warnings,
         )
 
     def list_source_files(self, run_id: int) -> list[dict[str, object]]:

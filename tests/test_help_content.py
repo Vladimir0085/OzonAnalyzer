@@ -21,6 +21,10 @@ class HelpContentTests(unittest.TestCase):
         self.assertIn("Акт о премии", text)
         self.assertIn("CompensationReport.xlsx", text)
         self.assertIn("учтён дважды", text)
+        self.assertIn("Защита от двойного учёта", text)
+        self.assertIn("положительная строка без артикула на ту же сумму (±0,01 ₽)", text)
+        self.assertIn("По умолчанию акт не добавляется", text)
+        self.assertIn("«Контроле качества»", text)
 
     def test_overview_help_documents_key_formulas(self) -> None:
         text = help_plain_text(OVERVIEW_HELP_CONTENT)

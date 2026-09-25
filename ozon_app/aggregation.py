@@ -133,4 +133,9 @@ def aggregate_calculations(calculations: list[RunCalculation]) -> RunCalculation
         taxable_unallocated_income_override=sum(
             item.taxable_unallocated_income for item in ordered
         ),
+        double_count_warnings=[
+            warning
+            for calculation in ordered
+            for warning in calculation.double_count_warnings
+        ],
     )

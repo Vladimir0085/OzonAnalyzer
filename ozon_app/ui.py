@@ -2555,6 +2555,27 @@ class OZPriceAnalyzerApp(tk.Tk):
                 if not dialog.confirmed:
                     return
 
+            # Must run before replacement lookup: a declined act leaves the session.
+            double_count_by_session: list[list[str]] = []
+            declined_acts: list[str] = []
+            for session in sessions:
+                accepted: list[str] = []
+                for match in session.double_count_matches():
+                    if messagebox.askyesno(
+                        "Возможен двойной учёт",
+                        f"{match.question()}\n\n"
+                        "«Нет» — акт не будет добавлен, остальные файлы "
+                        "импортируются как обычно.",
+                        icon="warning",
+                        default=messagebox.NO,
+                        parent=self,
+                    ):
+                        accepted.append(match.quality_message())
+                    else:
+                        session.exclude_source(match.act_source)
+                        declined_acts.append(f"№ {match.act.document_number}")
+                double_count_by_session.append(accepted)
+
             replacements_by_session = [
                 self.service.replacement_run_ids(session) for session in sessions
             ]
@@ -2612,6 +2633,7 @@ class OZPriceAnalyzerApp(tk.Tk):
                 skipped_articles=skipped,
                 replace_run_ids_by_session=replacements_by_session,
                 source_period_warnings_by_session=warnings_by_session,
+                double_count_warnings_by_session=double_count_by_session,
             )
 
             self.current_run_id = calculations[-1].run_id
@@ -2629,6 +2651,11 @@ class OZPriceAnalyzerApp(tk.Tk):
                 f"Создано новых отчетов: {created_count}. Обновлено: {updated_count}.\n\n"
                 f"{details}"
             )
+            if declined_acts:
+                result_message += (
+                    "\n\nНе добавлены PDF-акты из-за возможного двойного учёта: "
+                    f"{', '.join(declined_acts)}."
+                )
             messagebox.showinfo(
                 "Пакет отчетов обработан" if len(calculations) > 1 else "Расчет готов",
                 result_message,

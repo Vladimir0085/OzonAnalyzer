@@ -223,6 +223,7 @@ class RunCalculation:
     realization_units: float = 0.0
     source_period_warnings: list[str] = field(default_factory=list)
     taxable_unallocated_income_override: float | None = None
+    double_count_warnings: list[str] = field(default_factory=list)
 
     @property
     def taxable_unallocated_income(self) -> float:
