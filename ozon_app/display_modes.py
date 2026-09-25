@@ -300,6 +300,11 @@ class _TableModeController:
             self.tab.rowconfigure(row, weight=0, minsize=0)
         if self.key == "overview":
             # Retain filters and controls on their own row above the enlarged table.
+            # The regular 50/50 layout pairs rows 0 and 2 with a grid uniform.
+            # Clear it while the summary in row 0 is hidden; otherwise Tk can
+            # reserve half the height for an invisible row after DPI changes.
+            self.tab.rowconfigure(self.splitter.absorb_row, uniform="")
+            self.tab.rowconfigure(self.splitter.table_row, uniform="")
             self.tree.master.grid_configure(row=self.splitter.table_row, column=0, sticky="nsew")
             self.tab.rowconfigure(self.splitter.row, minsize=self.splitter.bar.winfo_reqheight())
             self.tab.rowconfigure(self.splitter.table_row, weight=1, minsize=110)
