@@ -10,6 +10,7 @@ from pathlib import Path
 from .calculator import calculate_run, discover_unknown_products
 from .config import ensure_app_dirs
 from .database import Database
+from .double_count import DoubleCountMatch, find_double_count_matches
 from .excel_reader import (
     REPORT_ACCRUAL,
     REPORT_ADDITIONAL_INCOME,
@@ -103,6 +104,18 @@ class ImportSession:
                     f"к месяцу отчета по начислениям ({expected})."
                 )
         return warnings
+
+    def double_count_matches(self) -> list[DoubleCountMatch]:
+        return find_double_count_matches(self.sources)
+
+    def exclude_source(self, source: ParsedSource) -> None:
+        """Drop a supplementary file that the user decided not to import."""
+        if source.report_type == REPORT_ACCRUAL:
+            raise ValueError("Отчет по начислениям нельзя исключить из расчета")
+        self.sources = [item for item in self.sources if item is not source]
+        self.duplicate_sources = [
+            item for item in self.duplicate_sources if item is not source
+        ]
 
 
 @dataclass(slots=True)
@@ -199,6 +212,7 @@ class AppService:
         skipped_articles: set[str] | None = None,
         replace_run_ids: list[int] | None = None,
         source_period_warnings: list[str] | None = None,
+        double_count_warnings: list[str] | None = None,
     ) -> RunCalculation:
         return self.complete_import_batch(
             [session],
@@ -206,6 +220,7 @@ class AppService:
             skipped_articles=skipped_articles,
             replace_run_ids_by_session=[list(replace_run_ids or [])],
             source_period_warnings_by_session=[list(source_period_warnings or [])],
+            double_count_warnings_by_session=[list(double_count_warnings or [])],
         )[0]
 
     def complete_import_batch(
@@ -215,12 +230,18 @@ class AppService:
         skipped_articles: set[str] | None = None,
         replace_run_ids_by_session: list[list[int]] | None = None,
         source_period_warnings_by_session: list[list[str]] | None = None,
+        double_count_warnings_by_session: list[list[str]] | None = None,
     ) -> list[RunCalculation]:
         if not sessions:
             raise ValueError("Нет подготовленных отчетов для сохранения")
         replacements = replace_run_ids_by_session or [[] for _session in sessions]
         warnings = source_period_warnings_by_session or [[] for _session in sessions]
-        if len(replacements) != len(sessions) or len(warnings) != len(sessions):
+        double_counts = double_count_warnings_by_session or [[] for _session in sessions]
+        if (
+            len(replacements) != len(sessions)
+            or len(warnings) != len(sessions)
+            or len(double_counts) != len(sessions)
+        ):
             raise ValueError("Нарушена структура пакетного импорта")
 
         tax_rate = float(self.db.get_setting("tax_rate", "0.04"))
@@ -235,7 +256,9 @@ class AppService:
         # Calculate every period before changing history. A malformed later month
         # therefore cannot leave a normally failed batch half-created.
         calculations: list[RunCalculation] = []
-        for session, session_warnings in zip(sessions, warnings):
+        for session, session_warnings, session_double_counts in zip(
+            sessions, warnings, double_counts
+        ):
             calculation = calculate_run(
                 session.sources,
                 product_map,
@@ -243,6 +266,7 @@ class AppService:
                 skipped_articles=skipped_articles,
             )
             calculation.source_period_warnings = list(session_warnings)
+            calculation.double_count_warnings = list(session_double_counts)
             calculations.append(calculation)
 
         for product in created_products or []:
@@ -348,6 +372,7 @@ class AppService:
                     tax_rate=old.tax_rate,
                 )
                 calculation.source_period_warnings = list(old.source_period_warnings)
+                calculation.double_count_warnings = list(old.double_count_warnings)
 
                 old_by_article = {item.article: item for item in old.products}
                 for item in calculation.products:
