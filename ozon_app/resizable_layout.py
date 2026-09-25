@@ -24,7 +24,7 @@ class _GridSplitter:
 
     def __init__(self, owner, parent, *, row: int, table_row: int, absorb_row: int,
                  min_upper: int, min_table: int, compact=None, protected_rows=(),
-                 table_fraction: float | None = None):
+                 table_fraction: float | None = None, bar: ttk.Frame | None = None):
         self.owner = owner
         self.parent = parent
         self.row = row
@@ -44,14 +44,15 @@ class _GridSplitter:
         self.table_height: int | None = None
         self._control_column = 1
 
-        self.bar = ttk.Frame(parent)
+        self.bar = bar if bar is not None else ttk.Frame(parent)
+        self.control_row = 1 if bar is not None else 0
         self.bar.grid(row=row, column=0, sticky="ew", pady=2)
         self.bar.columnconfigure(0, weight=1)
 
         # This is now a visual separator only. It is deliberately not bound to
         # mouse events and does not show a resize cursor.
         self.handle = ttk.Separator(self.bar, orient="horizontal")
-        self.handle.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self.handle.grid(row=self.control_row, column=0, sticky="ew", padx=(0, 6))
 
         parent.bind("<Configure>", self._on_configure, add="+")
         owner.after_idle(self._initialize)
@@ -63,7 +64,7 @@ class _GridSplitter:
             style="TableTool.TButton",
             command=command,
         )
-        button.grid(row=0, column=self._control_column, padx=(4, 0))
+        button.grid(row=self.control_row, column=self._control_column, padx=(4, 0))
         self._control_column += 1
         return button
 
@@ -182,17 +183,11 @@ class ResizableOZPriceAnalyzerApp(OZPriceAnalyzerApp):
         self.overview_tab.rowconfigure(1, weight=0)
         self.overview_tab.rowconfigure(2, weight=1)
 
-        def compact(upper: int):
-            _hide_label_with_text(
-                self.kpi_frame,
-                "Нераспределенные доходы / расходы сюда не включаются",
-                upper < 210,
-            )
-
         self._overview_splitter = _GridSplitter(
             self, self.overview_tab, row=1, table_row=2, absorb_row=0,
-            min_upper=210, min_table=190, compact=compact,
+            min_upper=210, min_table=190,
             protected_rows=(0,), table_fraction=0.5,
+            bar=self.overview_controls,
         )
 
     def _build_scenario_tab(self) -> None:
