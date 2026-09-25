@@ -257,7 +257,7 @@ class _TableModeController:
         self._normal_grid = dict(self.tree.master.grid_info())
         self._detached: _DetachedTableWindow | None = None
 
-        self.splitter.add_button("⛶ На весь экран", self.toggle_fullscreen)
+        self.fullscreen_button = self.splitter.add_button("⛶ На весь экран", self.toggle_fullscreen)
         self.splitter.add_button("↗ Отдельно", self.open_detached)
 
         self.full_toolbar = ttk.Frame(self.tab, style="FloatingTools.TFrame", padding=(6, 4))
@@ -288,7 +288,9 @@ class _TableModeController:
         self._hidden = [
             child
             for child in self.tab.winfo_children()
-            if child is not self.tree.master and child.winfo_manager() == "grid"
+            if child is not self.tree.master
+            and child.winfo_manager() == "grid"
+            and (self.key != "overview" or child is not self.splitter.bar)
         ]
         for child in self._hidden:
             child.grid_remove()
@@ -296,10 +298,22 @@ class _TableModeController:
         self.splitter.suspended = True
         for row in range(0, max(self.splitter.table_row + 3, 9)):
             self.tab.rowconfigure(row, weight=0, minsize=0)
-        self.tree.master.grid_configure(row=0, column=0, sticky="nsew")
-        self.tab.rowconfigure(0, weight=1)
-        self.full_toolbar.place(relx=1.0, x=-10, y=8, anchor="ne")
-        self.full_toolbar.lift()
+        if self.key == "overview":
+            # Retain filters and controls on their own row above the enlarged table.
+            # The regular 50/50 layout pairs rows 0 and 2 with a grid uniform.
+            # Clear it while the summary in row 0 is hidden; otherwise Tk can
+            # reserve half the height for an invisible row after DPI changes.
+            self.tab.rowconfigure(self.splitter.absorb_row, uniform="")
+            self.tab.rowconfigure(self.splitter.table_row, uniform="")
+            self.tree.master.grid_configure(row=self.splitter.table_row, column=0, sticky="nsew")
+            self.tab.rowconfigure(self.splitter.row, minsize=self.splitter.bar.winfo_reqheight())
+            self.tab.rowconfigure(self.splitter.table_row, weight=1, minsize=110)
+            self.fullscreen_button.configure(text="Вернуть обычный вид")
+        else:
+            self.tree.master.grid_configure(row=0, column=0, sticky="nsew")
+            self.tab.rowconfigure(0, weight=1)
+            self.full_toolbar.place(relx=1.0, x=-10, y=8, anchor="ne")
+            self.full_toolbar.lift()
         self.fullscreen = True
         self.owner.status_var.set(
             f"{self.title}: таблица развернута. F11 или Esc — вернуть обычный вид."
@@ -308,7 +322,10 @@ class _TableModeController:
     def restore(self) -> None:
         if not self.fullscreen:
             return
-        self.full_toolbar.place_forget()
+        if self.key == "overview":
+            self.fullscreen_button.configure(text="⛶ На весь экран")
+        else:
+            self.full_toolbar.place_forget()
         self.tree.master.grid_configure(
             row=int(self._normal_grid.get("row", self.splitter.table_row)),
             column=int(self._normal_grid.get("column", 0)),

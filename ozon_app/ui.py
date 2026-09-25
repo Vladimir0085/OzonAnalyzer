@@ -40,6 +40,7 @@ from .service import AppService, ImportBatch, ImportSession
 from .storage import migrate_storage
 from .theme import apply_theme
 from .trends import TrendPoint, build_trend_points, chart_bounds
+from .ui_containers import ScrollableSummary, WrappingToolbar
 
 
 THEME_LABELS = {"Системная": "system", "Темная": "dark", "Светлая": "light"}
@@ -257,10 +258,9 @@ class OZPriceAnalyzerApp(tk.Tk):
 
     def _build_overview_tab(self) -> None:
         self.overview_tab.columnconfigure(0, weight=1)
-        self.overview_tab.rowconfigure(1, weight=1)
-        self.overview_upper = ttk.Frame(self.overview_tab)
-        self.overview_upper.grid(row=0, column=0, sticky="nsew")
-        self.overview_upper.columnconfigure(0, weight=1)
+        self.overview_summary = ScrollableSummary(self.overview_tab)
+        self.overview_summary.grid(row=0, column=0, sticky="nsew")
+        self.overview_upper = self.overview_summary.content
         overview_header = ttk.Frame(self.overview_upper)
         overview_header.grid(row=0, column=0, sticky="ew", pady=(4, 4))
         overview_header.columnconfigure(1, weight=1)
@@ -350,63 +350,71 @@ class OZPriceAnalyzerApp(tk.Tk):
                 row=1, column=0, sticky="w", pady=(1, 0)
             )
 
-        filters = ttk.Frame(self.overview_upper)
-        filters.grid(row=2, column=0, sticky="ew", pady=(0, 4))
-        filters.columnconfigure(10, weight=1)
-        ttk.Label(filters, text="Категория:").grid(row=0, column=0, padx=(0, 6))
+        # Filters stay above the table while the summary scrolls independently.
+        self.overview_controls = ttk.Frame(self.overview_tab)
+        self.overview_controls.grid(row=1, column=0, sticky="ew", pady=2)
+        self.overview_controls.columnconfigure(0, weight=1)
+        filters = WrappingToolbar(self.overview_controls)
+        filters.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(2, 4))
+        self.overview_filters = filters
+        category_group = filters.add_group()
+        ttk.Label(category_group, text="Категория:").grid(row=0, column=0, padx=(0, 6))
         self.overview_category_var = tk.StringVar(value=CATEGORY_ALL)
         self.overview_category_combo = ttk.Combobox(
-            filters,
+            category_group,
             textvariable=self.overview_category_var,
             state="readonly",
             width=24,
             style="Compact.TCombobox",
         )
-        self.overview_category_combo.grid(row=0, column=1, padx=(0, 14))
+        self.overview_category_combo.grid(row=0, column=1)
         self.overview_category_combo.bind("<<ComboboxSelected>>", lambda _event: self._populate_overview())
-        ttk.Label(filters, text="Артикул:").grid(row=0, column=2, padx=(0, 6))
+        article_group = filters.add_group()
+        ttk.Label(article_group, text="Артикул:").grid(row=0, column=0, padx=(0, 6))
         self.overview_article_var = tk.StringVar()
         overview_search = ttk.Entry(
-            filters,
+            article_group,
             textvariable=self.overview_article_var,
             width=20,
             style="Compact.TEntry",
         )
-        overview_search.grid(row=0, column=3, padx=(0, 14))
+        overview_search.grid(row=0, column=1)
         overview_search.bind("<KeyRelease>", lambda _event: self._populate_overview())
-        ttk.Label(filters, text="Сортировать:").grid(row=0, column=4, padx=(0, 6))
+        sort_group = filters.add_group()
+        ttk.Label(sort_group, text="Сортировать:").grid(row=0, column=0, padx=(0, 6))
         self.overview_sort_var = tk.StringVar(value=SORT_NONE)
         overview_sort = ttk.Combobox(
-            filters,
+            sort_group,
             textvariable=self.overview_sort_var,
             values=SORT_METRICS,
             state="readonly",
             width=21,
             style="Compact.TCombobox",
         )
-        overview_sort.grid(row=0, column=5, padx=(0, 8))
+        overview_sort.grid(row=0, column=1)
         overview_sort.bind("<<ComboboxSelected>>", lambda _event: self._populate_overview())
         self.overview_sort_direction_var = tk.StringVar(value=SORT_ASCENDING)
+        direction_group = filters.add_group()
         overview_direction = ttk.Combobox(
-            filters,
+            direction_group,
             textvariable=self.overview_sort_direction_var,
             values=(SORT_ASCENDING, SORT_DESCENDING),
             state="readonly",
             width=24,
             style="Compact.TCombobox",
         )
-        overview_direction.grid(row=0, column=6, padx=(0, 8))
+        overview_direction.grid(row=0, column=0)
         overview_direction.bind("<<ComboboxSelected>>", lambda _event: self._populate_overview())
+        reset_group = filters.add_group()
         ttk.Button(
-            filters,
+            reset_group,
             text="Сбросить",
             style="Compact.TButton",
             command=self._reset_overview_filters,
-        ).grid(row=0, column=7)
+        ).grid(row=0, column=0)
         self.overview_count_var = tk.StringVar()
-        ttk.Label(filters, textvariable=self.overview_count_var, style="Muted.TLabel").grid(
-            row=0, column=10, sticky="e"
-        )
+        count_group = filters.add_group()
+        ttk.Label(count_group, textvariable=self.overview_count_var, style="Muted.TLabel").grid(row=0, column=0)
 
         columns = [column for column, _heading, _width in OVERVIEW_COLUMN_SPECS]
         headings = [heading for _column, heading, _width in OVERVIEW_COLUMN_SPECS]
