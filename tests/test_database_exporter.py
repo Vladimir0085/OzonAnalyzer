@@ -114,10 +114,7 @@ class DatabaseExporterTests(unittest.TestCase):
                 sheet = workbook["КонсОтчет"]
                 self.assertEqual(sheet["H4"].value, -50)
                 self.assertEqual(sheet["L3"].value, "Чистая прибыль товаров")
-                self.assertEqual(
-                    sheet["M3"].value,
-                    "Итог отчета с учетом нераспределенных после налога",
-                )
+                self.assertEqual(sheet["M3"].value, "Чистая прибыль от деятельности")
                 self.assertEqual(sheet["M4"].value, "=L7+H4-J4")
                 self.assertEqual(sheet["K6"].value, "Финрезультат Ozon на ед.")
                 self.assertEqual(sheet["M6"].value, "Финрезультат Ozon до с/с и налога")

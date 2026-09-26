@@ -22,6 +22,7 @@ from .ui import (
     _scenario_values,
     filter_product_results,
     filter_scenario_rows,
+    scenario_tax_note,
     summarize_category,
 )
 
@@ -414,6 +415,7 @@ class CatalogAndCategoryOZPriceAnalyzerApp(LaptopFriendlyOZPriceAnalyzerApp):
         if calculation is None:
             for variable in self.scenario_kpi_vars.values():
                 variable.set("—")
+            self.scenario_tax_note_var.set("")
             self.scenario_count_var.set("")
             return
 
@@ -462,6 +464,7 @@ class CatalogAndCategoryOZPriceAnalyzerApp(LaptopFriendlyOZPriceAnalyzerApp):
         self.scenario_kpi_vars["planned_margin"].set(
             _percent(planned_net_total / planned_cost_total if planned_cost_total else 0)
         )
+        self.scenario_tax_note_var.set(scenario_tax_note(calculation))
         scope_note = ""
         active_count = len(self._active_report_run_ids())
         if active_count > 1:

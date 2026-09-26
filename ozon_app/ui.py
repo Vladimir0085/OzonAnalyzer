@@ -36,8 +36,14 @@ from .exporter import export_calculation, export_run, suggested_export_name
 from .help_content import OVERVIEW_HELP_CONTENT, REPORTS_HELP_CONTENT, HelpContent
 from .models import Product, ProductResult, RunCalculation, RunSummary, ScenarioRow, UnknownProduct
 from .ordering import insert_at_group_end
-from .service import AppService, ImportBatch, ImportSession
+from .service import AppService, ImportBatch, ImportSession, TaxRateChangePlan
 from .storage import migrate_storage
+from .tax_rates import (
+    TaxRateError,
+    TaxRatePeriod,
+    TaxRateSchedule,
+    format_rate_percent,
+)
 from .theme import apply_theme
 from .trends import TrendPoint, build_trend_points, chart_bounds
 from .ui_containers import ScrollableSummary, WrappingToolbar
@@ -297,7 +303,7 @@ class OZPriceAnalyzerApp(tk.Tk):
         self.kpi_vars: dict[str, tk.StringVar] = {}
         cards = [
             ("revenue", "Выручка"),
-            ("net_profit", "Чистая прибыль"),
+            ("net_profit", "Чистая прибыль товаров"),
             ("profitability", "Доходность"),
             ("units", "Продажи, шт."),
             ("unallocated", "Нераспределенные"),
@@ -611,6 +617,12 @@ class OZPriceAnalyzerApp(tk.Tk):
             card.grid(row=0, column=index, sticky="nsew", padx=(0 if index == 0 else 5, 0 if index == 3 else 5))
             ttk.Label(card, text=title, style="CardMuted.TLabel").grid(row=0, column=0, sticky="w")
             ttk.Label(card, textvariable=self.scenario_kpi_vars[key], style="Kpi.TLabel").grid(row=1, column=0, sticky="w", pady=(4, 0))
+            if key == "planned_net":
+                # Налог сценария считается по одной ставке — подписываем, по какой.
+                self.scenario_tax_note_var = tk.StringVar(value="")
+                ttk.Label(card, textvariable=self.scenario_tax_note_var, style="CardMuted.TLabel").grid(
+                    row=2, column=0, sticky="w", pady=(2, 0)
+                )
 
     def _build_history_tab(self) -> None:
         self.history_tab.columnconfigure(0, weight=1)
@@ -916,10 +928,6 @@ class OZPriceAnalyzerApp(tk.Tk):
         theme_combo.grid(row=0, column=1, sticky="w", pady=5)
         theme_combo.bind("<<ComboboxSelected>>", self._preview_theme)
 
-        ttk.Label(settings, text="Налоговая ставка, %:").grid(row=0, column=2, sticky="w", padx=(24, 8), pady=5)
-        self.tax_rate_var = tk.StringVar(value=_plain_number(float(self.db.get_setting("tax_rate", "0.04")) * 100))
-        ttk.Entry(settings, textvariable=self.tax_rate_var, width=14).grid(row=0, column=3, sticky="w", pady=5)
-
         ttk.Label(settings, text="Повторный период:").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=5)
         ttk.Label(
             settings,
@@ -964,7 +972,7 @@ class OZPriceAnalyzerApp(tk.Tk):
         backup_box.columnconfigure(0, weight=1)
         ttk.Label(
             backup_box,
-            text="Архив содержит историю расчетов, настройки, себестоимость и сохраненные исходные отчеты.",
+            text="Архив содержит историю расчетов, настройки, налоговые ставки, себестоимость и сохраненные исходные отчеты.",
             style="Muted.TLabel",
         ).grid(row=0, column=0, sticky="w")
         backup_actions = ttk.Frame(backup_box)
@@ -984,6 +992,7 @@ class OZPriceAnalyzerApp(tk.Tk):
             text="Пересчитать историю",
             command=self.recalculate_saved_history,
         ).grid(row=0, column=2, padx=4)
+        self._build_tax_rates_box(settings, row=5)
 
         product_header = ttk.Frame(self.settings_tab)
         product_header.grid(row=2, column=0, sticky="ew", pady=(6, 8))
@@ -1214,6 +1223,7 @@ class OZPriceAnalyzerApp(tk.Tk):
         self.overview_totals_title_var.set("Итоги по отчету")
         for variable in self.scenario_kpi_vars.values():
             variable.set("—")
+        self.scenario_tax_note_var.set("")
         self.overview_count_var.set("")
         self.scenario_count_var.set("")
 
@@ -1537,6 +1547,7 @@ class OZPriceAnalyzerApp(tk.Tk):
         if calculation is None:
             for variable in self.scenario_kpi_vars.values():
                 variable.set("—")
+            self.scenario_tax_note_var.set("")
             self.scenario_count_var.set("")
             return
         target_run_id = self._active_single_run_id()
@@ -1576,6 +1587,7 @@ class OZPriceAnalyzerApp(tk.Tk):
         self.scenario_kpi_vars["planned_revenue"].set(_money(planned_revenue_total))
         self.scenario_kpi_vars["planned_net"].set(_money(planned_net_total))
         self.scenario_kpi_vars["planned_margin"].set(_percent(planned_net_total / planned_cost_total if planned_cost_total else 0))
+        self.scenario_tax_note_var.set(scenario_tax_note(calculation))
         scope_note = ""
         active_count = len(self._active_report_run_ids())
         if active_count > 1:
@@ -2195,17 +2207,8 @@ class OZPriceAnalyzerApp(tk.Tk):
         self.update_idletasks()
         try:
             create_backup(self.service.paths["root"], backup_path)
-            old_current_id = self.current_run_id
-            old_overview_ids = set(self.overview_run_ids)
             result = self.service.recalculate_history()
-            self.current_run_id = result.old_to_new.get(old_current_id, old_current_id)
-            self.overview_run_ids = {
-                result.old_to_new.get(run_id, run_id)
-                for run_id in old_overview_ids
-            }
-            self.current_calculation = None
-            self.overview_calculation = None
-            self.refresh_all()
+            self._follow_replaced_runs(result.old_to_new)
             messagebox.showinfo(
                 "Перерасчет завершен",
                 f"Пересчитано отчетов: {result.replaced_runs}.\n"
@@ -2228,6 +2231,203 @@ class OZPriceAnalyzerApp(tk.Tk):
         finally:
             self.configure(cursor="")
             self.status_var.set(self._current_run_status())
+
+    def _follow_replaced_runs(self, old_to_new: dict[int, int]) -> None:
+        """Keep the open report and Overview selection after saved runs were replaced."""
+        self.current_run_id = old_to_new.get(self.current_run_id, self.current_run_id)
+        self.overview_run_ids = {
+            old_to_new.get(run_id, run_id)
+            for run_id in self.overview_run_ids
+        }
+        self.current_calculation = None
+        self.overview_calculation = None
+        self.refresh_all()
+
+    def _build_tax_rates_box(self, parent: ttk.Frame, row: int) -> None:
+        tax_box = ttk.LabelFrame(
+            parent,
+            text="Налоговые ставки УСН «Доходы»",
+            padding=(12, 10),
+        )
+        tax_box.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(14, 0))
+        tax_box.columnconfigure(2, weight=1)
+        self.tax_rates_tree = ttk.Treeview(
+            tax_box,
+            columns=("valid_from", "rate"),
+            show="headings",
+            height=3,
+            selectmode="browse",
+        )
+        self.tax_rates_tree.heading("valid_from", text="Действует с")
+        self.tax_rates_tree.heading("rate", text="Ставка, %")
+        self.tax_rates_tree.column("valid_from", width=150, minwidth=120, anchor="w", stretch=False)
+        self.tax_rates_tree.column("rate", width=110, minwidth=90, anchor="e", stretch=False)
+        self.tax_rates_tree.grid(row=0, column=0, sticky="nsw")
+        tax_scroll = ttk.Scrollbar(tax_box, orient="vertical", command=self.tax_rates_tree.yview)
+        self.tax_rates_tree.configure(yscrollcommand=tax_scroll.set)
+        tax_scroll.grid(row=0, column=1, sticky="ns", padx=(0, 14))
+        tax_actions = ttk.Frame(tax_box)
+        tax_actions.grid(row=0, column=2, sticky="nsew")
+        tax_actions.columnconfigure(3, weight=1)
+        ttk.Button(tax_actions, text="Добавить…", command=self.add_tax_rate).grid(
+            row=0, column=0, padx=(0, 4)
+        )
+        ttk.Button(tax_actions, text="Изменить…", command=self.edit_tax_rate).grid(
+            row=0, column=1, padx=4
+        )
+        ttk.Button(
+            tax_actions,
+            text="Удалить",
+            style="Danger.TButton",
+            command=self.delete_tax_rate,
+        ).grid(row=0, column=2, padx=4)
+        ttk.Label(
+            tax_actions,
+            text=(
+                "Налог каждой строки отчета считается по ставке на ее дату: берется строка "
+                "с наибольшей датой «Действует с», не позже даты операции. При изменении "
+                "справочника программа покажет, какие сохраненные отчеты будут пересчитаны."
+            ),
+            style="Muted.TLabel",
+            justify="left",
+            wraplength=620,
+        ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        self.tax_rates_tree.bind("<Double-1>", lambda _event: self.edit_tax_rate())
+        self.tax_rates_tree.bind("<Delete>", lambda _event: self.delete_tax_rate())
+        self._refresh_tax_rates()
+
+    def _refresh_tax_rates(self) -> None:
+        tree = getattr(self, "tax_rates_tree", None)
+        if tree is None:
+            return
+        tree.delete(*tree.get_children())
+        for period in self.db.tax_rate_schedule().periods:
+            valid_from, rate = tax_rate_table_values(period)
+            tree.insert("", "end", iid=_tax_rate_iid(period), values=(valid_from, rate))
+
+    def _selected_tax_rate(self) -> TaxRatePeriod | None:
+        selection = self.tax_rates_tree.selection()
+        if not selection:
+            return None
+        for period in self.db.tax_rate_schedule().periods:
+            if _tax_rate_iid(period) == selection[0]:
+                return period
+        return None
+
+    def add_tax_rate(self) -> None:
+        schedule = self.db.tax_rate_schedule()
+        dialog = TaxRateDialog(self, "Новая налоговая ставка", rate=schedule.periods[-1].rate)
+        self.wait_window(dialog)
+        if dialog.result is not None:
+            self._change_tax_rates([*schedule.periods, dialog.result])
+
+    def edit_tax_rate(self) -> None:
+        period = self._selected_tax_rate()
+        if period is None:
+            messagebox.showinfo("Налоговые ставки", "Выберите строку справочника", parent=self)
+            return
+        dialog = TaxRateDialog(self, "Изменить налоговую ставку", period=period)
+        self.wait_window(dialog)
+        if dialog.result is not None:
+            periods = self.db.tax_rate_schedule().periods
+            self._change_tax_rates(
+                [dialog.result if item == period else item for item in periods]
+            )
+
+    def delete_tax_rate(self) -> None:
+        period = self._selected_tax_rate()
+        if period is None:
+            messagebox.showinfo("Налоговые ставки", "Выберите строку справочника", parent=self)
+            return
+        if period.valid_from is None:
+            messagebox.showinfo(
+                "Налоговые ставки",
+                "Строку «с начала» удалить нельзя: она задает ставку до первой даты "
+                "справочника. Ее ставку можно изменить.",
+                parent=self,
+            )
+            return
+        confirmed = messagebox.askyesno(
+            "Удалить налоговую ставку?",
+            f"Удалить ставку {format_rate_percent(period.rate)}, действующую с "
+            f"{period.valid_from:%d.%m.%Y}? С этой даты будет действовать предыдущая ставка.",
+            parent=self,
+        )
+        if confirmed:
+            periods = self.db.tax_rate_schedule().periods
+            self._change_tax_rates([item for item in periods if item != period])
+
+    def _change_tax_rates(self, periods: list[TaxRatePeriod]) -> None:
+        """Проверить новый справочник, показать затронутые отчеты и сохранить после подтверждения."""
+        try:
+            new_schedule = TaxRateSchedule(periods)
+        except TaxRateError as exc:
+            messagebox.showerror("Налоговые ставки", str(exc), parent=self)
+            return
+        if new_schedule == self.db.tax_rate_schedule():
+            return
+
+        self.configure(cursor="watch")
+        self.status_var.set("Поиск сохраненных отчетов, которых касается изменение ставок…")
+        self.update_idletasks()
+        try:
+            plan = self.service.preview_tax_rate_change(new_schedule)
+        except Exception as exc:
+            messagebox.showerror(
+                "Налоговые ставки",
+                f"Справочник ставок не изменен:\n{exc}",
+                parent=self,
+            )
+            return
+        finally:
+            self.configure(cursor="")
+            self.status_var.set(self._current_run_status())
+
+        backup_path: Path | None = None
+        if plan.items:
+            dialog = TaxRecalculationPreviewDialog(self, plan, self.run_number_by_id)
+            self.wait_window(dialog)
+            if not dialog.confirmed:
+                self.status_var.set("Изменение ставок отменено: справочник и отчеты не изменены")
+                return
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_path = (
+                self.service.paths["backups"]
+                / f"Автокопия_перед_изменением_ставок_{stamp}.ozbackup"
+            )
+
+        self.configure(cursor="watch")
+        self.status_var.set("Сохранение ставок и пересчет отчетов…")
+        self.update_idletasks()
+        try:
+            old_to_new = self.service.apply_tax_rate_change(plan, backup_path)
+        except Exception as exc:
+            backup_note = (
+                f"\n\nРезервная копия до операции: {backup_path}"
+                if backup_path is not None and backup_path.exists()
+                else ""
+            )
+            messagebox.showerror(
+                "Налоговые ставки",
+                f"Справочник ставок и отчеты не изменены:\n{exc}{backup_note}",
+                parent=self,
+            )
+            return
+        finally:
+            self.configure(cursor="")
+            self.status_var.set(self._current_run_status())
+
+        self._refresh_tax_rates()
+        if not old_to_new:
+            self.status_var.set("Справочник ставок сохранен; сохраненные отчеты не затронуты")
+            return
+        self._follow_replaced_runs(old_to_new)
+        messagebox.showinfo(
+            "Налоговые ставки",
+            f"Справочник ставок сохранен. Пересчитано отчетов: {len(old_to_new)}.\n\n"
+            f"Резервная копия до пересчета:\n{backup_path}",
+            parent=self,
+        )
 
     def show_about(self) -> None:
         AboutDialog(self)
@@ -2342,7 +2542,7 @@ class OZPriceAnalyzerApp(tk.Tk):
 
     def _reload_settings_after_restore(self) -> None:
         self.theme_var.set(THEME_VALUES.get(self.db.get_setting("theme", "system"), "Системная"))
-        self.tax_rate_var.set(_plain_number(float(self.db.get_setting("tax_rate", "0.04")) * 100))
+        self._refresh_tax_rates()
         self.warn_realization_var.set(self.db.get_setting("warn_without_realization", "1") == "1")
         self.preview_rows_var.set(self.db.get_setting("preview_rows", "500"))
         if hasattr(self, "storage_path_var"):
@@ -2463,17 +2663,13 @@ class OZPriceAnalyzerApp(tk.Tk):
 
     def save_settings(self) -> None:
         try:
-            tax_percent = _parse_number(self.tax_rate_var.get())
-            if tax_percent < 0 or tax_percent > 100:
-                raise ValueError
             preview_rows = int(self.preview_rows_var.get())
             if preview_rows < 100 or preview_rows > 5000:
                 raise ValueError
         except ValueError:
-            messagebox.showerror("Настройки", "Проверьте налоговую ставку и количество строк предпросмотра", parent=self)
+            messagebox.showerror("Настройки", "Проверьте количество строк предпросмотра", parent=self)
             return
         self.db.set_setting("theme", THEME_LABELS[self.theme_var.get()])
-        self.db.set_setting("tax_rate", str(tax_percent / 100))
         self.db.set_setting("warn_without_realization", "1" if self.warn_realization_var.get() else "0")
         self.db.set_setting("preview_rows", str(preview_rows))
         self.colors = apply_theme(self, THEME_LABELS[self.theme_var.get()])
@@ -3751,6 +3947,149 @@ class ProductDialog(tk.Toplevel):
         self.destroy()
 
 
+class TaxRateDialog(tk.Toplevel):
+    def __init__(
+        self,
+        parent: OZPriceAnalyzerApp,
+        title: str,
+        period: TaxRatePeriod | None = None,
+        rate: float | None = None,
+    ):
+        super().__init__(parent)
+        self.result: TaxRatePeriod | None = None
+        self.period = period
+        self.title(title)
+        self.transient(parent)
+        self.grab_set()
+        self.resizable(False, False)
+        self.configure(background=parent.colors["window"])
+        self.columnconfigure(1, weight=1)
+        is_opening = period is not None and period.valid_from is None
+        self.date_var = tk.StringVar(
+            value="с начала"
+            if is_opening
+            else (f"{period.valid_from:%d.%m.%Y}" if period is not None else "")
+        )
+        initial_rate = period.rate if period is not None else rate
+        self.rate_var = tk.StringVar(
+            value=_plain_number(initial_rate * 100) if initial_rate is not None else ""
+        )
+        ttk.Label(self, text="Действует с (ДД.ММ.ГГГГ)").grid(
+            row=0, column=0, sticky="w", pady=6, padx=(22, 12)
+        )
+        date_entry = ttk.Entry(self, textvariable=self.date_var, width=20)
+        date_entry.grid(row=0, column=1, sticky="ew", pady=(18, 6), padx=(0, 22))
+        if is_opening:
+            date_entry.configure(state="disabled")
+        ttk.Label(self, text="Ставка, %").grid(row=1, column=0, sticky="w", pady=6, padx=(22, 12))
+        rate_entry = ttk.Entry(self, textvariable=self.rate_var, width=20)
+        rate_entry.grid(row=1, column=1, sticky="ew", pady=6, padx=(0, 22))
+        buttons = ttk.Frame(self)
+        buttons.grid(row=2, column=0, columnspan=2, sticky="e", padx=18, pady=(14, 18))
+        ttk.Button(buttons, text="Отмена", command=self.destroy).grid(row=0, column=0, padx=4)
+        ttk.Button(buttons, text="Сохранить", style="Accent.TButton", command=self._save).grid(
+            row=0, column=1, padx=4
+        )
+        (rate_entry if is_opening else date_entry).focus_set()
+        self.bind("<Return>", lambda _event: self._save())
+        self.bind("<Escape>", lambda _event: self.destroy())
+
+    def _save(self) -> None:
+        try:
+            self.result = parse_tax_rate_input(
+                self.date_var.get(),
+                self.rate_var.get(),
+                opening=self.period is not None and self.period.valid_from is None,
+            )
+        except ValueError as exc:
+            self.result = None
+            messagebox.showerror("Налоговая ставка", str(exc), parent=self)
+            return
+        self.destroy()
+
+
+class TaxRecalculationPreviewDialog(tk.Toplevel):
+    """Предпросмотр отчетов, налог которых изменится после правки справочника ставок."""
+
+    COLUMNS = (
+        ("report", "Отчет", 260),
+        ("period", "Период", 190),
+        ("old_tax", "Налог был", 110),
+        ("new_tax", "Налог станет", 120),
+        ("product_delta", "Изм. чистой прибыли товаров", 250),
+        ("activity_delta", "Изм. чистой прибыли от деятельности", 300),
+    )
+
+    def __init__(
+        self,
+        parent: OZPriceAnalyzerApp,
+        plan: TaxRateChangePlan,
+        run_numbers: dict[int, int] | None = None,
+    ):
+        super().__init__(parent)
+        self.confirmed = False
+        self.title("Пересчет отчетов после изменения ставок")
+        self.transient(parent)
+        self.grab_set()
+        self.configure(background=parent.colors["window"])
+        # Заголовки столбцов подгоняются под текст, поэтому окну нужна ширина для всех столбцов.
+        self.geometry(f"{min(1400, max(900, self.winfo_screenwidth() - 60))}x440")
+        self.minsize(760, 320)
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(2, weight=1)
+
+        ttk.Label(self, text="Изменятся сохраненные отчеты", style="Section.TLabel").grid(
+            row=0, column=0, sticky="w", padx=20, pady=(18, 4)
+        )
+        ttk.Label(
+            self,
+            text=tax_recalculation_summary(plan),
+            justify="left",
+            wraplength=980,
+        ).grid(row=1, column=0, sticky="w", padx=20, pady=(0, 10))
+
+        table = ttk.Frame(self)
+        table.grid(row=2, column=0, sticky="nsew", padx=20)
+        table.columnconfigure(0, weight=1)
+        table.rowconfigure(0, weight=1)
+        self.tree = ttk.Treeview(
+            table,
+            columns=[column for column, _title, _width in self.COLUMNS],
+            show="headings",
+            height=min(max(len(plan.changed_items), 3), 12),
+        )
+        for column, title, width in self.COLUMNS:
+            self.tree.heading(column, text=title)
+            self.tree.column(
+                column,
+                width=width,
+                minwidth=90,
+                anchor="w" if column in {"report", "period"} else "e",
+                stretch=False,
+            )
+        yscroll = ttk.Scrollbar(table, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=yscroll.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        for values in tax_recalculation_rows(plan, run_numbers or {}):
+            self.tree.insert("", "end", values=values)
+
+        buttons = ttk.Frame(self)
+        buttons.grid(row=3, column=0, sticky="e", padx=16, pady=16)
+        ttk.Button(buttons, text="Отмена", command=self.destroy).grid(row=0, column=0, padx=4)
+        ttk.Button(
+            buttons,
+            text="Пересчитать и сохранить",
+            style="Accent.TButton",
+            command=self._confirm,
+        ).grid(row=0, column=1, padx=4)
+        self.bind("<Escape>", lambda _event: self.destroy())
+
+    def _confirm(self) -> None:
+        self.confirmed = True
+        self.destroy()
+
+
 class UnknownProductsDialog(tk.Toplevel):
     def __init__(self, parent: OZPriceAnalyzerApp, unknown: list[UnknownProduct]):
         super().__init__(parent)
@@ -4118,6 +4457,91 @@ def _set_category_choices(combo: ttk.Combobox, variable: tk.StringVar, categorie
     combo["values"] = values
     if variable.get() not in values:
         variable.set(CATEGORY_ALL)
+
+
+def _tax_rate_iid(period: TaxRatePeriod) -> str:
+    return "start" if period.valid_from is None else period.valid_from.isoformat()
+
+
+def tax_rate_table_values(period: TaxRatePeriod) -> tuple[str, str]:
+    valid_from = "с начала" if period.valid_from is None else f"{period.valid_from:%d.%m.%Y}"
+    return valid_from, format_rate_percent(period.rate).removesuffix(" %")
+
+
+def parse_tax_rate_input(date_text: str, rate_text: str, *, opening: bool) -> TaxRatePeriod:
+    """Проверить поля окна ставки; «с начала» задается без даты."""
+    valid_from = None
+    if not opening:
+        valid_from = _parse_user_date(date_text)
+        if valid_from is None:
+            raise ValueError("Укажите дату начала действия в формате ДД.ММ.ГГГГ")
+    try:
+        percent = _parse_number(rate_text)
+    except ValueError:
+        raise ValueError("Укажите ставку числом от 0 до 100") from None
+    if not 0 <= percent <= 100:
+        raise ValueError("Налоговая ставка должна быть от 0 до 100%")
+    return TaxRatePeriod(valid_from, percent / 100)
+
+
+def _parse_user_date(value: str) -> date | None:
+    try:
+        return datetime.strptime(value.strip(), "%d.%m.%Y").date()
+    except ValueError:
+        return None
+
+
+def tax_recalculation_summary(plan: TaxRateChangePlan) -> str:
+    changed = len(plan.changed_items)
+    lines = [
+        f"Налог изменится в отчетах: {changed}. Отчеты будут заново рассчитаны из "
+        "сохраненных исходных файлов по новому справочнику ставок; наименования, "
+        "историческая себестоимость и плановые цены сохранятся.",
+    ]
+    if plan.unchanged_tax_count:
+        lines.append(
+            f"Еще в отчетах: {plan.unchanged_tax_count} налог не изменится — у них "
+            "обновятся только сохраненные ставки и ставка для сценария цены."
+        )
+    lines.append(
+        "Перед пересчетом приложение создаст резервную копию. Если отменить, "
+        "справочник ставок и отчеты останутся без изменений."
+    )
+    return "\n".join(lines)
+
+
+def tax_recalculation_rows(
+    plan: TaxRateChangePlan,
+    run_numbers: dict[int, int],
+) -> list[tuple[str, ...]]:
+    rows: list[tuple[str, ...]] = []
+    for item in plan.changed_items:
+        number = run_numbers.get(item.run_id)
+        prefix = f"№{number} · " if number is not None else ""
+        period = (
+            f"{item.period_start:%d.%m.%Y}–{item.period_end:%d.%m.%Y}"
+            if item.period_start and item.period_end
+            else "Период не определен"
+        )
+        rows.append(
+            (
+                f"{prefix}{item.report_name}",
+                period,
+                _money(item.old_tax),
+                _money(item.new_tax),
+                _signed_money(item.product_net_profit_delta),
+                _signed_money(item.activity_net_profit_delta),
+            )
+        )
+    return rows
+
+
+def scenario_tax_note(calculation: RunCalculation) -> str:
+    """Подпись ставки, по которой сценарий цены считает налог."""
+    rate = format_rate_percent(calculation.tax_rate)
+    if calculation.period_end is None:
+        return f"Налог в сценарии: {rate}"
+    return f"Налог в сценарии: {rate} (ставка на {calculation.period_end:%d.%m.%Y})"
 
 
 def _money(value: float | None) -> str:

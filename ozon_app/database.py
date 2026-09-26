@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from collections import Counter
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Iterator
@@ -12,9 +13,22 @@ from .config import DEFAULT_TAX_RATE
 from .excel_reader import normalize_text
 from .models import ParsedSource, Product, ProductResult, RunCalculation, RunSummary
 from .ordering import default_article_order, insert_at_group_end
+from .tax_rates import TaxRatePeriod, TaxRateSchedule
 
 
 DOUBLE_COUNT_EVENT = "Двойной учёт акта"
+TAX_RATE_EVENT = "Налоговая ставка"
+
+
+@dataclass(slots=True)
+class RunReplacement:
+    """Пересчитанный отчет, который заменяет сохраненный с тем же периодом."""
+
+    old_run_id: int
+    calculation: RunCalculation
+    stored_paths: dict[str, Path]
+    created_at: str
+    planned_prices: dict[str, float] = field(default_factory=dict)
 
 
 def _normalized_accrual_type(value: str) -> str:
@@ -27,6 +41,7 @@ class Database:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
         self._seed_defaults()
+        self._ensure_tax_rates()
         self._ensure_product_order()
         self._ensure_run_names()
 
@@ -114,6 +129,9 @@ class Database:
                     net_profit REAL NOT NULL,
                     unallocated_total REAL NOT NULL,
                     taxable_unallocated_income REAL NOT NULL DEFAULT 0,
+                    unallocated_income_tax REAL NOT NULL DEFAULT 0,
+                    tax_period_start TEXT,
+                    tax_period_end TEXT,
                     realization_revenue REAL NOT NULL DEFAULT 0,
                     realization_units REAL NOT NULL DEFAULT 0,
                     duplicate_realization_rows INTEGER NOT NULL DEFAULT 0,
@@ -162,6 +180,7 @@ class Database:
                     compensation REAL NOT NULL,
                     other REAL NOT NULL,
                     financial_result REAL NOT NULL,
+                    tax REAL NOT NULL DEFAULT 0,
                     PRIMARY KEY (run_id, article)
                 );
 
@@ -196,6 +215,24 @@ class Database:
                     planned_price REAL NOT NULL,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (run_id, article)
+                );
+
+                -- Справочник ставок: valid_from IS NULL — строка «с начала».
+                CREATE TABLE IF NOT EXISTS tax_rates (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    valid_from TEXT,
+                    rate REAL NOT NULL CHECK (rate >= 0 AND rate <= 1)
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_tax_rates_valid_from
+                    ON tax_rates(COALESCE(valid_from, ''));
+
+                -- Снимок справочника, по которому рассчитан отчет.
+                CREATE TABLE IF NOT EXISTS run_tax_rates (
+                    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+                    position INTEGER NOT NULL,
+                    valid_from TEXT,
+                    rate REAL NOT NULL,
+                    PRIMARY KEY (run_id, position)
                 );
                 """
             )
@@ -234,6 +271,85 @@ class Database:
                     ), 0)
                     """
                 )
+            # До 0.5.30 налог не хранился и считался как «база × ставка отчета».
+            # Переносим ровно эти значения, чтобы результаты старых отчетов не изменились.
+            if "tax" not in result_columns:
+                db.execute("ALTER TABLE product_results ADD COLUMN tax REAL NOT NULL DEFAULT 0")
+                db.execute(
+                    """
+                    UPDATE product_results
+                    SET tax = (revenue_no_points + partner_programs) * (
+                        SELECT tax_rate FROM runs WHERE runs.id = product_results.run_id
+                    )
+                    """
+                )
+            if "unallocated_income_tax" not in run_columns:
+                db.execute(
+                    "ALTER TABLE runs ADD COLUMN unallocated_income_tax REAL NOT NULL DEFAULT 0"
+                )
+                db.execute("UPDATE runs SET unallocated_income_tax = taxable_unallocated_income * tax_rate")
+            if "tax_period_start" not in run_columns:
+                db.execute("ALTER TABLE runs ADD COLUMN tax_period_start TEXT")
+                db.execute("ALTER TABLE runs ADD COLUMN tax_period_end TEXT")
+                self._backfill_tax_periods(db)
+            # Старый отчет рассчитан по одной ставке на все даты.
+            db.execute(
+                """
+                INSERT INTO run_tax_rates(run_id, position, valid_from, rate)
+                SELECT id, 0, NULL, tax_rate FROM runs
+                WHERE id NOT IN (SELECT run_id FROM run_tax_rates)
+                """
+            )
+
+    @staticmethod
+    def _backfill_tax_periods(db: sqlite3.Connection) -> None:
+        dates_by_run: dict[int, list[str]] = {}
+        for row in db.execute("SELECT id, period_start, period_end FROM runs"):
+            dates_by_run[int(row[0])] = [value for value in (row[1], row[2]) if value]
+        for row in db.execute("SELECT run_id, period_start, period_end FROM source_files"):
+            dates_by_run.setdefault(int(row[0]), []).extend(
+                value for value in (row[1], row[2]) if value
+            )
+        for run_id, values in dates_by_run.items():
+            if values:
+                db.execute(
+                    "UPDATE runs SET tax_period_start = ?, tax_period_end = ? WHERE id = ?",
+                    (min(values), max(values), run_id),
+                )
+
+    def _ensure_tax_rates(self) -> None:
+        """Создать справочник из прежней единой ставки настроек (одна строка «с начала»)."""
+        with self.transaction() as db:
+            if db.execute("SELECT COUNT(*) FROM tax_rates").fetchone()[0]:
+                return
+            row = db.execute("SELECT value FROM settings WHERE key = 'tax_rate'").fetchone()
+            try:
+                rate = float(row[0]) if row else DEFAULT_TAX_RATE
+            except (TypeError, ValueError):
+                rate = DEFAULT_TAX_RATE
+            if not 0 <= rate <= 1:
+                rate = DEFAULT_TAX_RATE
+            db.execute("INSERT INTO tax_rates(valid_from, rate) VALUES (NULL, ?)", (rate,))
+
+    def tax_rate_schedule(self) -> TaxRateSchedule:
+        with self.read() as db:
+            return _read_tax_schedule(db)
+
+    def replace_tax_rates(self, schedule: TaxRateSchedule) -> None:
+        with self.transaction() as db:
+            self._write_tax_schedule(db, schedule)
+
+    @staticmethod
+    def _write_tax_schedule(db: sqlite3.Connection, schedule: TaxRateSchedule) -> None:
+        db.execute("DELETE FROM tax_rates")
+        db.executemany(
+            "INSERT INTO tax_rates(valid_from, rate) VALUES (?, ?)",
+            [(_date_text(item.valid_from), item.rate) for item in schedule.periods],
+        )
+
+    def run_tax_schedule(self, run_id: int) -> TaxRateSchedule:
+        with self.read() as db:
+            return _read_run_tax_schedule(db, run_id)
 
     def _seed_defaults(self) -> None:
         defaults = {
@@ -481,197 +597,271 @@ class Database:
         stored_paths: dict[str, Path],
         replace_run_ids: list[int] | None = None,
     ) -> int:
+        with self.transaction() as db:
+            run_id, replaced_paths = self._insert_run(
+                db, calculation, stored_paths, replace_run_ids
+            )
+        self._remove_unreferenced_source_files(replaced_paths)
+        return run_id
+
+    def _insert_run(
+        self,
+        db: sqlite3.Connection,
+        calculation: RunCalculation,
+        stored_paths: dict[str, Path],
+        replace_run_ids: list[int] | None = None,
+    ) -> tuple[int, list[str]]:
+        """Записать отчет в открытую транзакцию; вернуть id и файлы замененных отчетов."""
         totals = calculation.totals()
         replace_ids = sorted(set(replace_run_ids or []))
         replaced_paths: list[str] = []
-        with self.transaction() as db:
-            preserved_name = ""
-            if replace_ids:
-                placeholders = ",".join("?" for _ in replace_ids)
-                replaced = db.execute(
-                    f"""
-                    SELECT id, report_name, period_start, period_end
-                    FROM runs
-                    WHERE id IN ({placeholders})
-                    ORDER BY id ASC
-                    """,
+        preserved_name = ""
+        if replace_ids:
+            placeholders = ",".join("?" for _ in replace_ids)
+            replaced = db.execute(
+                f"""
+                SELECT id, report_name, period_start, period_end
+                FROM runs
+                WHERE id IN ({placeholders})
+                ORDER BY id ASC
+                """,
+                replace_ids,
+            ).fetchall()
+            if len(replaced) != len(replace_ids):
+                raise KeyError("Обновляемый отчет уже удален")
+            expected_period = (
+                _date_text(calculation.period_start),
+                _date_text(calculation.period_end),
+            )
+            if any(
+                (row["period_start"], row["period_end"]) != expected_period
+                for row in replaced
+            ):
+                raise ValueError(
+                    "Можно заменять только отчет с тем же периодом"
+                )
+            preserved_name = str(replaced[0]["report_name"] or "").strip()
+            replaced_paths = [
+                str(row["stored_path"])
+                for row in db.execute(
+                    f"SELECT stored_path FROM source_files WHERE run_id IN ({placeholders})",
                     replace_ids,
                 ).fetchall()
-                if len(replaced) != len(replace_ids):
-                    raise KeyError("Обновляемый отчет уже удален")
-                expected_period = (
+            ]
+        cursor = db.execute(
+            """
+            INSERT INTO runs(
+                period_start, period_end, tax_rate, source_count, units, revenue,
+                financial_result, cost_sold, tax, net_profit, unallocated_total,
+                taxable_unallocated_income, unallocated_income_tax,
+                tax_period_start, tax_period_end, realization_revenue, realization_units,
+                duplicate_realization_rows, already_accrued_realization_rows, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Готов')
+            """,
+            (
+                _date_text(calculation.period_start),
+                _date_text(calculation.period_end),
+                calculation.tax_rate,
+                len(calculation.source_files),
+                totals["units"],
+                totals["revenue"],
+                totals["financial_result"],
+                totals["cost_sold"],
+                totals["tax"],
+                totals["net_profit"],
+                calculation.unallocated_total,
+                calculation.taxable_unallocated_income,
+                calculation.unallocated_income_tax,
+                _date_text(calculation.tax_period_start),
+                _date_text(calculation.tax_period_end),
+                calculation.realization_revenue,
+                calculation.realization_units,
+                calculation.duplicate_realization_rows,
+                calculation.already_accrued_realization_rows,
+            ),
+        )
+        run_id = int(cursor.lastrowid)
+        db.execute(
+            "UPDATE runs SET report_name = ? WHERE id = ?",
+            (
+                preserved_name
+                or _default_run_name(
+                    run_id,
                     _date_text(calculation.period_start),
                     _date_text(calculation.period_end),
-                )
-                if any(
-                    (row["period_start"], row["period_end"]) != expected_period
-                    for row in replaced
-                ):
-                    raise ValueError(
-                        "Можно заменять только отчет с тем же периодом"
-                    )
-                preserved_name = str(replaced[0]["report_name"] or "").strip()
-                replaced_paths = [
-                    str(row["stored_path"])
-                    for row in db.execute(
-                        f"SELECT stored_path FROM source_files WHERE run_id IN ({placeholders})",
-                        replace_ids,
-                    ).fetchall()
-                ]
-            cursor = db.execute(
+                ),
+                run_id,
+            ),
+        )
+        for source in calculation.source_files:
+            db.execute(
                 """
-                INSERT INTO runs(
-                    period_start, period_end, tax_rate, source_count, units, revenue,
-                    financial_result, cost_sold, tax, net_profit, unallocated_total,
-                    taxable_unallocated_income, realization_revenue, realization_units,
-                    duplicate_realization_rows, already_accrued_realization_rows, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Готов')
+                INSERT INTO source_files(
+                    run_id, original_name, original_path, stored_path, file_hash,
+                    report_type, sheet_name, header_row, row_count, total_amount,
+                    period_start, period_end
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    _date_text(calculation.period_start),
-                    _date_text(calculation.period_end),
-                    calculation.tax_rate,
-                    len(calculation.source_files),
-                    totals["units"],
-                    totals["revenue"],
-                    totals["financial_result"],
-                    totals["cost_sold"],
-                    totals["tax"],
-                    totals["net_profit"],
-                    calculation.unallocated_total,
-                    calculation.taxable_unallocated_income,
-                    calculation.realization_revenue,
-                    calculation.realization_units,
-                    calculation.duplicate_realization_rows,
-                    calculation.already_accrued_realization_rows,
-                ),
-            )
-            run_id = int(cursor.lastrowid)
-            db.execute(
-                "UPDATE runs SET report_name = ? WHERE id = ?",
-                (
-                    preserved_name
-                    or _default_run_name(
-                        run_id,
-                        _date_text(calculation.period_start),
-                        _date_text(calculation.period_end),
-                    ),
                     run_id,
+                    source.path.name,
+                    str(source.path),
+                    str(stored_paths[str(source.path)]),
+                    source.file_hash,
+                    source.report_type,
+                    source.sheet_name,
+                    source.header_row,
+                    source.row_count,
+                    source.total_amount,
+                    _date_text(source.period_start),
+                    _date_text(source.period_end),
                 ),
             )
-            for source in calculation.source_files:
-                db.execute(
-                    """
-                    INSERT INTO source_files(
-                        run_id, original_name, original_path, stored_path, file_hash,
-                        report_type, sheet_name, header_row, row_count, total_amount,
-                        period_start, period_end
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        run_id,
-                        source.path.name,
-                        str(source.path),
-                        str(stored_paths[str(source.path)]),
-                        source.file_hash,
-                        source.report_type,
-                        source.sheet_name,
-                        source.header_row,
-                        source.row_count,
-                        source.total_amount,
-                        _date_text(source.period_start),
-                        _date_text(source.period_end),
-                    ),
+        for item in calculation.products:
+            db.execute(
+                """
+                INSERT INTO product_results(
+                    run_id, article, name, category, material_cost, labor_cost, units,
+                    revenue_no_points, partner_programs, points, commission, processing,
+                    delivery, logistics, reverse_logistics, returns_cancels, acquiring,
+                    stars, packaging, compensation, other, financial_result, tax
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
-            for item in calculation.products:
-                db.execute(
-                    """
-                    INSERT INTO product_results(
-                        run_id, article, name, category, material_cost, labor_cost, units,
-                        revenue_no_points, partner_programs, points, commission, processing,
-                        delivery, logistics, reverse_logistics, returns_cancels, acquiring,
-                        stars, packaging, compensation, other, financial_result
-                    ) VALUES (
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                """,
+                _product_result_tuple(run_id, item) + (item.tax(calculation.tax_rate),),
+            )
+        schedule = calculation.tax_schedule or TaxRateSchedule.single(calculation.tax_rate)
+        db.executemany(
+            "INSERT INTO run_tax_rates(run_id, position, valid_from, rate) VALUES (?, ?, ?, ?)",
+            [
+                (run_id, position, _date_text(item.valid_from), item.rate)
+                for position, item in enumerate(schedule.periods)
+            ],
+        )
+        for accrual_type, (row_count, amount) in calculation.unallocated.items():
+            db.execute(
+                "INSERT INTO unallocated VALUES (?, ?, ?, ?)",
+                (run_id, accrual_type, row_count, amount),
+            )
+        for accrual_type, (with_article, without_article) in calculation.accrual_stats.items():
+            db.execute(
+                "INSERT INTO accrual_stats VALUES (?, ?, ?, ?, ?)",
+                (run_id, _normalized_accrual_type(accrual_type), accrual_type, with_article, without_article),
+            )
+        for article, message in calculation.skipped_articles.items():
+            db.execute(
+                "INSERT INTO quality_events(run_id, severity, event_type, message) VALUES (?, 'Предупреждение', 'Пропущенный артикул', ?)",
+                (run_id, message),
+            )
+        for sku in sorted(calculation.sku_conflicts):
+            db.execute(
+                "INSERT INTO quality_events(run_id, severity, event_type, message) VALUES (?, 'Предупреждение', 'Конфликт SKU', ?)",
+                (run_id, f"SKU {sku} связан с несколькими артикулами"),
+            )
+        if calculation.duplicate_realization_rows:
+            db.execute(
+                "INSERT INTO quality_events(run_id, severity, event_type, message) VALUES (?, 'Информация', 'Дубли выкупов', ?)",
+                (run_id, f"Пропущено одинаковых строк: {calculation.duplicate_realization_rows}"),
+            )
+        if calculation.already_accrued_realization_rows:
+            db.execute(
+                "INSERT INTO quality_events(run_id, severity, event_type, message) VALUES (?, 'Информация', 'Выручка уже начислена', ?)",
+                (run_id, f"Не добавлено повторно строк: {calculation.already_accrued_realization_rows}"),
+            )
+        if not any(source.report_type == "REALIZATION" for source in calculation.source_files):
+            db.execute(
+                "INSERT INTO quality_events(run_id, severity, event_type, message) VALUES (?, 'Предупреждение', 'Нет отчета о выкупах', ?)",
+                (run_id, "Расчет выполнен без RealizationReportCIS; выручка может быть неполной"),
+            )
+        for message in calculation.source_period_warnings:
+            db.execute(
+                "INSERT INTO quality_events(run_id, severity, event_type, message) "
+                "VALUES (?, 'Предупреждение', 'Несовпадение периодов', ?)",
+                (run_id, message),
+            )
+        for message in calculation.double_count_warnings:
+            db.execute(
+                "INSERT INTO quality_events(run_id, severity, event_type, message) "
+                "VALUES (?, 'Предупреждение', ?, ?)",
+                (run_id, DOUBLE_COUNT_EVENT, message),
+            )
+        for message in calculation.tax_rate_warnings:
+            db.execute(
+                "INSERT INTO quality_events(run_id, severity, event_type, message) "
+                "VALUES (?, 'Предупреждение', ?, ?)",
+                (run_id, TAX_RATE_EVENT, message),
+            )
+        hash_counts = Counter(source.file_hash for source in calculation.source_files)
+        run_names = {
+            int(row["id"]): str(row["report_name"])
+            for row in db.execute("SELECT id, report_name FROM runs").fetchall()
+        }
+        for source in calculation.source_files:
+            previous_run_ids = [
+                value for value in source.duplicate_run_ids if value not in replace_ids
+            ]
+            if previous_run_ids or hash_counts[source.file_hash] > 1:
+                details = (
+                    "ранее использовался в "
+                    + ", ".join(
+                        f"«{run_names[value]}»" if value in run_names else "сохраненном отчете"
+                        for value in previous_run_ids
                     )
-                    """,
-                    _product_result_tuple(run_id, item),
+                    if previous_run_ids
+                    else "повторно выбран в текущем запуске"
                 )
-            for accrual_type, (row_count, amount) in calculation.unallocated.items():
                 db.execute(
-                    "INSERT INTO unallocated VALUES (?, ?, ?, ?)",
-                    (run_id, accrual_type, row_count, amount),
+                    "INSERT INTO quality_events(run_id, severity, event_type, message) VALUES (?, 'Предупреждение', 'Повторный файл', ?)",
+                    (run_id, f"{source.path.name}: {details}"),
                 )
-            for accrual_type, (with_article, without_article) in calculation.accrual_stats.items():
+        if replace_ids:
+            placeholders = ",".join("?" for _ in replace_ids)
+            db.execute(f"DELETE FROM runs WHERE id IN ({placeholders})", replace_ids)
+        return run_id, replaced_paths
+
+    def replace_runs(
+        self,
+        replacements: list[RunReplacement],
+        tax_schedule: TaxRateSchedule | None = None,
+    ) -> dict[int, int]:
+        """Заменить отчеты пересчитанными (и, при необходимости, справочник ставок) одной транзакцией.
+
+        Название, дата расчета и плановые цены прежнего отчета сохраняются.
+        """
+        old_to_new: dict[int, int] = {}
+        removed_paths: list[str] = []
+        with self.transaction() as db:
+            if tax_schedule is not None:
+                self._write_tax_schedule(db, tax_schedule)
+            for item in replacements:
+                new_id, replaced_paths = self._insert_run(
+                    db,
+                    item.calculation,
+                    item.stored_paths,
+                    replace_run_ids=[item.old_run_id],
+                )
                 db.execute(
-                    "INSERT INTO accrual_stats VALUES (?, ?, ?, ?, ?)",
-                    (run_id, _normalized_accrual_type(accrual_type), accrual_type, with_article, without_article),
+                    "UPDATE runs SET created_at = ? WHERE id = ?",
+                    (item.created_at, new_id),
                 )
-            for article, message in calculation.skipped_articles.items():
-                db.execute(
-                    "INSERT INTO quality_events(run_id, severity, event_type, message) VALUES (?, 'Предупреждение', 'Пропущенный артикул', ?)",
-                    (run_id, message),
+                db.executemany(
+                    "INSERT INTO scenario_prices(run_id, article, planned_price) VALUES (?, ?, ?)",
+                    [(new_id, article, price) for article, price in item.planned_prices.items()],
                 )
-            for sku in sorted(calculation.sku_conflicts):
-                db.execute(
-                    "INSERT INTO quality_events(run_id, severity, event_type, message) VALUES (?, 'Предупреждение', 'Конфликт SKU', ?)",
-                    (run_id, f"SKU {sku} связан с несколькими артикулами"),
-                )
-            if calculation.duplicate_realization_rows:
-                db.execute(
-                    "INSERT INTO quality_events(run_id, severity, event_type, message) VALUES (?, 'Информация', 'Дубли выкупов', ?)",
-                    (run_id, f"Пропущено одинаковых строк: {calculation.duplicate_realization_rows}"),
-                )
-            if calculation.already_accrued_realization_rows:
-                db.execute(
-                    "INSERT INTO quality_events(run_id, severity, event_type, message) VALUES (?, 'Информация', 'Выручка уже начислена', ?)",
-                    (run_id, f"Не добавлено повторно строк: {calculation.already_accrued_realization_rows}"),
-                )
-            if not any(source.report_type == "REALIZATION" for source in calculation.source_files):
-                db.execute(
-                    "INSERT INTO quality_events(run_id, severity, event_type, message) VALUES (?, 'Предупреждение', 'Нет отчета о выкупах', ?)",
-                    (run_id, "Расчет выполнен без RealizationReportCIS; выручка может быть неполной"),
-                )
-            for message in calculation.source_period_warnings:
-                db.execute(
-                    "INSERT INTO quality_events(run_id, severity, event_type, message) "
-                    "VALUES (?, 'Предупреждение', 'Несовпадение периодов', ?)",
-                    (run_id, message),
-                )
-            for message in calculation.double_count_warnings:
-                db.execute(
-                    "INSERT INTO quality_events(run_id, severity, event_type, message) "
-                    "VALUES (?, 'Предупреждение', ?, ?)",
-                    (run_id, DOUBLE_COUNT_EVENT, message),
-                )
-            hash_counts = Counter(source.file_hash for source in calculation.source_files)
-            run_names = {
-                int(row["id"]): str(row["report_name"])
-                for row in db.execute("SELECT id, report_name FROM runs").fetchall()
-            }
-            for source in calculation.source_files:
-                previous_run_ids = [
-                    value for value in source.duplicate_run_ids if value not in replace_ids
-                ]
-                if previous_run_ids or hash_counts[source.file_hash] > 1:
-                    details = (
-                        "ранее использовался в "
-                        + ", ".join(
-                            f"«{run_names[value]}»" if value in run_names else "сохраненном отчете"
-                            for value in previous_run_ids
-                        )
-                        if previous_run_ids
-                        else "повторно выбран в текущем запуске"
-                    )
-                    db.execute(
-                        "INSERT INTO quality_events(run_id, severity, event_type, message) VALUES (?, 'Предупреждение', 'Повторный файл', ?)",
-                        (run_id, f"{source.path.name}: {details}"),
-                    )
-            if replace_ids:
-                placeholders = ",".join("?" for _ in replace_ids)
-                db.execute(f"DELETE FROM runs WHERE id IN ({placeholders})", replace_ids)
-        self._remove_unreferenced_source_files(replaced_paths)
-        return run_id
+                removed_paths.extend(replaced_paths)
+                old_to_new[item.old_run_id] = new_id
+        self._remove_unreferenced_source_files(removed_paths)
+        return old_to_new
+
+    def run_tax_periods(self) -> dict[int, tuple[date | None, date | None]]:
+        """Интервал дат налоговой базы каждого сохраненного отчета."""
+        with self.read() as db:
+            rows = db.execute("SELECT id, tax_period_start, tax_period_end FROM runs").fetchall()
+        return {
+            int(row["id"]): (_parse_date(row["tax_period_start"]), _parse_date(row["tax_period_end"]))
+            for row in rows
+        }
 
     def list_runs(self) -> list[RunSummary]:
         with self.read() as db:
@@ -679,7 +869,7 @@ class Database:
                 """
                 SELECT r.id, r.created_at, r.period_start, r.period_end, r.source_count,
                        r.units, r.revenue, r.net_profit, r.unallocated_total, r.status,
-                       r.report_name, r.tax_rate, r.taxable_unallocated_income,
+                       r.report_name, r.unallocated_income_tax,
                        CASE WHEN r.cost_sold = 0 THEN 0
                             ELSE r.net_profit / r.cost_sold
                        END AS profitability,
@@ -713,12 +903,8 @@ class Database:
         summaries: list[RunSummary] = []
         for row in rows:
             values = dict(row)
-            tax_rate = float(values.pop("tax_rate"))
-            taxable_unallocated_income = float(
-                values.pop("taxable_unallocated_income")
-            )
+            unallocated_income_tax = float(values.pop("unallocated_income_tax"))
             revenue = float(values["revenue"])
-            unallocated_income_tax = taxable_unallocated_income * tax_rate
             values["net_margin"] = (
                 (
                     float(values["net_profit"])
@@ -816,6 +1002,7 @@ class Database:
                 "SELECT event_type, message FROM quality_events WHERE run_id = ?",
                 (run_id,),
             ).fetchall()
+            tax_schedule = _read_run_tax_schedule(db, run_id)
         skipped = {row["message"].split(" — ", 1)[0]: row["message"] for row in events if row["event_type"] == "Пропущенный артикул"}
         conflicts = {
             row["message"].removeprefix("SKU ").removesuffix(" связан с несколькими артикулами")
@@ -832,6 +1019,13 @@ class Database:
             for row in events
             if row["event_type"] == DOUBLE_COUNT_EVENT
         ]
+        tax_rate_warnings = [
+            str(row["message"])
+            for row in events
+            if row["event_type"] == TAX_RATE_EVENT
+        ]
+        tax_period_start = _parse_date(run["tax_period_start"])
+        tax_period_end = _parse_date(run["tax_period_end"])
         return RunCalculation(
             run_id=run_id,
             period_start=_parse_date(run["period_start"]),
@@ -852,6 +1046,16 @@ class Database:
                 run["taxable_unallocated_income"]
             ),
             double_count_warnings=double_count_warnings,
+            unallocated_income_tax_override=float(run["unallocated_income_tax"]),
+            tax_schedule=tax_schedule,
+            tax_period_start=tax_period_start,
+            tax_period_end=tax_period_end,
+            applied_tax_rates=(
+                tax_schedule.applied_rates(tax_period_start, tax_period_end)
+                if tax_period_start is not None
+                else []
+            ),
+            tax_rate_warnings=tax_rate_warnings,
         )
 
     def list_source_files(self, run_id: int) -> list[dict[str, object]]:
@@ -1022,4 +1226,25 @@ def _row_to_product_result(row: sqlite3.Row) -> ProductResult:
         compensation=float(row["compensation"]),
         other=float(row["other"]),
         financial_result=float(row["financial_result"]),
+        tax_override=float(row["tax"]),
+    )
+
+
+def _read_tax_schedule(db: sqlite3.Connection) -> TaxRateSchedule:
+    rows = db.execute("SELECT valid_from, rate FROM tax_rates").fetchall()
+    return TaxRateSchedule(
+        TaxRatePeriod(_parse_date(row["valid_from"]), float(row["rate"])) for row in rows
+    )
+
+
+def _read_run_tax_schedule(db: sqlite3.Connection, run_id: int) -> TaxRateSchedule:
+    rows = db.execute(
+        "SELECT valid_from, rate FROM run_tax_rates WHERE run_id = ? ORDER BY position",
+        (run_id,),
+    ).fetchall()
+    if not rows:
+        run = db.execute("SELECT tax_rate FROM runs WHERE id = ?", (run_id,)).fetchone()
+        return TaxRateSchedule.single(float(run["tax_rate"]) if run else DEFAULT_TAX_RATE)
+    return TaxRateSchedule(
+        TaxRatePeriod(_parse_date(row["valid_from"]), float(row["rate"])) for row in rows
     )

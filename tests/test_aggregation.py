@@ -77,7 +77,8 @@ class AggregationTests(unittest.TestCase):
         self.assertEqual(row.labor_cost, 28)
         self.assertEqual(row.cost_sold, 500)
         self.assertEqual(row.tax(combined.tax_rate), 74)
-        self.assertAlmostEqual(combined.tax_rate, 74 / 1400)
+        # Ставка для сценария — ставка самого позднего отчета, а не средневзвешенная.
+        self.assertEqual(combined.tax_rate, 0.06)
         self.assertEqual(row.net_profit(combined.tax_rate), 326)
         self.assertAlmostEqual(row.profitability(combined.tax_rate), 326 / 500)
         self.assertEqual(combined.unallocated_total, -25)

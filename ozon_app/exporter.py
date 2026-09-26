@@ -11,6 +11,7 @@ from openpyxl.workbook.properties import CalcProperties
 from .config import resource_path
 from .database import Database
 from .models import ProductResult, RunCalculation
+from .tax_rates import format_applied_rates
 
 
 RESULT_COLUMNS = {
@@ -85,12 +86,17 @@ def _fill_report_sheet(ws, calculation: RunCalculation, planned_prices: dict[str
     ws["H4"] = calculation.unallocated_total
     ws["I4"] = calculation.taxable_unallocated_income
     ws["J4"] = calculation.unallocated_income_tax
+    # Налог уже рассчитан по ставкам на даты строк; P4 — только ставка для сценария цены.
+    ws["P3"] = scenario_tax_rate_caption(calculation)
     ws["P4"] = calculation.tax_rate
+    ws["P4"].number_format = "0.00%"
     ws["M4"] = "=L7+H4-J4"
     if calculation.period_start and calculation.period_end:
         ws["B5"] = f"Период: {calculation.period_start:%d.%m.%Y}-{calculation.period_end:%d.%m.%Y}"
     else:
         ws["B5"] = "Период не определен"
+    if calculation.applied_tax_rates:
+        ws["C5"] = f"Ставки налога: {format_applied_rates(calculation.applied_tax_rates)}"
     for column in ("F", "G", "H", "L", "M", "O", "P"):
         ws[f"{column}7"] = f"=SUM({column}8:{column}{last_row})"
     ws["O7"] = f"=SUM(O8:O{last_row})+$J$4"
@@ -143,11 +149,7 @@ def _write_product_row(
     ws[f"L{row}"] = f"=M{row}-H{row}-O{row}"
     ws[f"M{row}"] = f"=AG{row}"
     ws[f"N{row}"] = f"=IFERROR(R{row}/Q{row},\"\")"
-    ws[f"O{row}"] = (
-        result.tax(tax_rate)
-        if result.tax_override is not None
-        else f"=P{row}*$P$4"
-    )
+    ws[f"O{row}"] = result.tax(tax_rate)
     ws[f"P{row}"] = f"=S{row}+T{row}"
     ws[f"Q{row}"] = result.units
     ws[f"R{row}"] = f"=SUM(S{row}:U{row})"
@@ -175,6 +177,12 @@ def _write_product_row(
     ws[f"AW{row}"] = f"=IF(AQ{row}=\"\",\"\",AQ{row}-AP{row}+AS{row}-AV{row})"
     ws[f"AX{row}"] = f"=IF(OR(AW{row}=\"\",Q{row}=0),\"\",AW{row}/Q{row})"
     ws[f"AY{row}"] = f"=IF(AX{row}=\"\",\"\",AX{row}-C{row})"
+
+
+def scenario_tax_rate_caption(calculation: RunCalculation) -> str:
+    if calculation.period_end is None:
+        return "Ставка налога для сценария"
+    return f"Ставка налога для сценария (на {calculation.period_end:%d.%m.%Y})"
 
 
 def _copy_row_style(ws, source_row: int, target_row: int, last_column: int) -> None:

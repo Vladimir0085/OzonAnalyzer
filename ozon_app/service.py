@@ -7,9 +7,10 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
+from .backup import create_backup
 from .calculator import calculate_run, discover_unknown_products
 from .config import ensure_app_dirs
-from .database import Database
+from .database import Database, RunReplacement
 from .double_count import DoubleCountMatch, find_double_count_matches
 from .excel_reader import (
     REPORT_ACCRUAL,
@@ -17,7 +18,12 @@ from .excel_reader import (
     REPORT_REALIZATION,
     parse_report,
 )
-from .models import ParsedSource, Product, RunCalculation, UnknownProduct
+from .models import ParsedSource, Product, RunCalculation, RunSummary, UnknownProduct
+from .tax_rates import TaxRateSchedule
+
+
+# Изменение налога меньше полкопейки считается отсутствием изменения.
+TAX_CHANGE_TOLERANCE = 0.005
 
 
 @dataclass(slots=True)
@@ -147,6 +153,58 @@ class HistoryRecalculationResult:
     old_to_new: dict[int, int] = field(default_factory=dict)
 
 
+@dataclass(slots=True)
+class TaxRateChangeItem:
+    """Отчет, которого касается изменение справочника ставок."""
+
+    run_id: int
+    report_name: str
+    period_start: date | None
+    period_end: date | None
+    old_tax: float
+    new_tax: float
+    old_product_net_profit: float
+    new_product_net_profit: float
+    old_activity_net_profit: float
+    new_activity_net_profit: float
+
+    @property
+    def tax_delta(self) -> float:
+        return self.new_tax - self.old_tax
+
+    @property
+    def product_net_profit_delta(self) -> float:
+        return self.new_product_net_profit - self.old_product_net_profit
+
+    @property
+    def activity_net_profit_delta(self) -> float:
+        return self.new_activity_net_profit - self.old_activity_net_profit
+
+    @property
+    def tax_changed(self) -> bool:
+        return abs(self.tax_delta) >= TAX_CHANGE_TOLERANCE
+
+
+@dataclass(slots=True)
+class TaxRateChangePlan:
+    """Предпросмотр изменения справочника ставок; применяется только после подтверждения."""
+
+    old_schedule: TaxRateSchedule
+    new_schedule: TaxRateSchedule
+    items: list[TaxRateChangeItem] = field(default_factory=list)
+    replacements: list[RunReplacement] = field(default_factory=list)
+
+    @property
+    def changed_items(self) -> list[TaxRateChangeItem]:
+        """Отчеты, у которых меняется налог (показываются в предпросмотре)."""
+        return [item for item in self.items if item.tax_changed]
+
+    @property
+    def unchanged_tax_count(self) -> int:
+        """Отчеты, у которых обновится только снимок ставок и ставка для сценария."""
+        return sum(1 for item in self.items if not item.tax_changed)
+
+
 class AppService:
     def __init__(self, base_dir: Path | None = None):
         self.paths = ensure_app_dirs(base_dir)
@@ -244,9 +302,7 @@ class AppService:
         ):
             raise ValueError("Нарушена структура пакетного импорта")
 
-        tax_rate = float(self.db.get_setting("tax_rate", "0.04"))
-        if tax_rate < 0 or tax_rate > 1:
-            raise ValueError("Налоговая ставка должна быть от 0 до 100%")
+        tax_rates = self.db.tax_rate_schedule()
         # Archived products remain valid calculation targets when their article
         # is present in an imported source row.
         product_map = self.db.product_map(active_only=False)
@@ -262,7 +318,7 @@ class AppService:
             calculation = calculate_run(
                 session.sources,
                 product_map,
-                tax_rate=tax_rate,
+                tax_rates,
                 skipped_articles=skipped_articles,
             )
             calculation.source_period_warnings = list(session_warnings)
@@ -295,13 +351,17 @@ class AppService:
         return runs[-1].id if runs else None
 
     def recalculate_history(self) -> HistoryRecalculationResult:
-        """Rebuild saved runs from stored source files while preserving historical inputs."""
+        """Rebuild saved runs from stored source files while preserving historical inputs.
+
+        Каждый отчет пересчитывается по своему сохраненному снимку налоговых ставок,
+        поэтому налог меняется только через изменение справочника ставок с предпросмотром.
+        """
         runs = self.db.list_runs()
         if not runs:
             return HistoryRecalculationResult(0, 0, 0.0, 0)
 
         current_products = self.db.product_map(active_only=False)
-        plans: list[tuple[int, RunCalculation, dict[str, float], str]] = []
+        replacements: list[RunReplacement] = []
         recovered_rows = 0
         financial_delta = 0.0
         units_delta = 0.0
@@ -313,67 +373,9 @@ class AppService:
         with tempfile.TemporaryDirectory(prefix="ozprice_history_recalc_") as temp_name:
             temp_root = Path(temp_name)
             for run in runs:
-                old = self.db.load_calculation(run.id)
-                source_records = self.db.list_source_files(run.id)
-                if not source_records:
-                    raise ValueError(
-                        f"У отчета «{run.report_name}» нет сохраненных исходных файлов. "
-                        "История не изменена."
-                    )
-
-                run_root = temp_root / str(run.id)
-                run_root.mkdir(parents=True)
-                parsed_sources: list[ParsedSource] = []
-                for index, record in enumerate(source_records, start=1):
-                    stored_path = Path(str(record["stored_path"]))
-                    if not stored_path.is_file():
-                        raise ValueError(
-                            f"Не найден сохраненный исходный файл «{record['original_name']}» "
-                            f"для отчета «{run.report_name}». История не изменена."
-                        )
-                    original_name = Path(str(record["original_name"])).name
-                    destination = run_root / original_name
-                    if destination.exists():
-                        destination = run_root / f"{index}_{original_name}"
-                    shutil.copy2(stored_path, destination)
-                    source = parse_report(destination)
-                    source.duplicate_run_ids = self.db.find_runs_by_hash(source.file_hash)
-                    parsed_sources.append(source)
-
-                historical_products = {
-                    item.article: Product(
-                        article=item.article,
-                        name=item.name,
-                        material_cost=item.material_cost,
-                        labor_cost=item.labor_cost,
-                        active=True,
-                        category=item.category,
-                    )
-                    for item in old.products
-                }
-                referenced_articles = {
-                    row.article
-                    for source in parsed_sources
-                    for row in source.accrual_rows
-                    if row.article
-                } | {
-                    row.raw_article
-                    for source in parsed_sources
-                    for row in source.realization_rows
-                    if row.raw_article
-                }
-                for article in referenced_articles:
-                    if article not in historical_products and article in current_products:
-                        historical_products[article] = current_products[article]
-
-                calculation = calculate_run(
-                    parsed_sources,
-                    historical_products,
-                    tax_rate=old.tax_rate,
+                old, calculation, stored_paths = self._rebuild_run(
+                    run, temp_root, current_products
                 )
-                calculation.source_period_warnings = list(old.source_period_warnings)
-                calculation.double_count_warnings = list(old.double_count_warnings)
-
                 old_by_article = {item.article: item for item in old.products}
                 for item in calculation.products:
                     previous = old_by_article.get(item.article)
@@ -387,25 +389,19 @@ class AppService:
                 units_delta += new_totals["units"] - old_totals["units"]
                 net_profit_delta += new_totals["net_profit"] - old_totals["net_profit"]
                 skipped_count += len(calculation.skipped_articles)
-                plans.append(
-                    (run.id, calculation, self.db.planned_prices(run.id), run.created_at)
+                replacements.append(
+                    RunReplacement(
+                        old_run_id=run.id,
+                        calculation=calculation,
+                        stored_paths=stored_paths,
+                        created_at=run.created_at,
+                        planned_prices=self.db.planned_prices(run.id),
+                    )
                 )
-
-            old_to_new: dict[int, int] = {}
-            for old_id, calculation, planned_prices, created_at in plans:
-                stored_paths = self._store_source_files(calculation.source_files)
-                new_id = self.db.save_run(
-                    calculation,
-                    stored_paths,
-                    replace_run_ids=[old_id],
-                )
-                self.db.set_run_created_at(new_id, created_at)
-                for article, price in planned_prices.items():
-                    self.db.save_planned_price(new_id, article, price)
-                old_to_new[old_id] = new_id
+            old_to_new = self.db.replace_runs(replacements)
 
         return HistoryRecalculationResult(
-            replaced_runs=len(plans),
+            replaced_runs=len(replacements),
             recovered_product_rows=recovered_rows,
             financial_result_delta=financial_delta,
             skipped_articles=skipped_count,
@@ -413,6 +409,152 @@ class AppService:
             net_profit_delta=net_profit_delta,
             old_to_new=old_to_new,
         )
+
+    def preview_tax_rate_change(self, new_schedule: TaxRateSchedule) -> TaxRateChangePlan:
+        """Найти отчеты, которых касается новый справочник ставок, и рассчитать их заново.
+
+        Ничего не записывает: ни справочник, ни отчеты, ни файлы.
+        """
+        old_schedule = self.db.tax_rate_schedule()
+        runs = self.db.list_runs()
+        tax_periods = self.db.run_tax_periods()
+        candidates = [
+            run
+            for run in runs
+            if not self.db.run_tax_schedule(run.id).same_rates_between(
+                new_schedule, *tax_periods.get(run.id, (None, None))
+            )
+        ]
+        plan = TaxRateChangePlan(old_schedule=old_schedule, new_schedule=new_schedule)
+        if not candidates:
+            return plan
+
+        current_products = self.db.product_map(active_only=False)
+        with tempfile.TemporaryDirectory(prefix="ozprice_tax_preview_") as temp_name:
+            temp_root = Path(temp_name)
+            for run in candidates:
+                old, calculation, stored_paths = self._rebuild_run(
+                    run, temp_root, current_products, tax_rates=new_schedule
+                )
+                old_totals = old.totals()
+                new_totals = calculation.totals()
+                plan.items.append(
+                    TaxRateChangeItem(
+                        run_id=run.id,
+                        report_name=run.report_name,
+                        period_start=old.period_start,
+                        period_end=old.period_end,
+                        old_tax=old_totals["tax"],
+                        new_tax=new_totals["tax"],
+                        old_product_net_profit=old_totals["net_profit"],
+                        new_product_net_profit=new_totals["net_profit"],
+                        old_activity_net_profit=old_totals["report_net_profit"],
+                        new_activity_net_profit=new_totals["report_net_profit"],
+                    )
+                )
+                plan.replacements.append(
+                    RunReplacement(
+                        old_run_id=run.id,
+                        calculation=calculation,
+                        stored_paths=stored_paths,
+                        created_at=run.created_at,
+                        planned_prices=self.db.planned_prices(run.id),
+                    )
+                )
+        return plan
+
+    def apply_tax_rate_change(
+        self,
+        plan: TaxRateChangePlan,
+        backup_path: Path | None = None,
+    ) -> dict[int, int]:
+        """Сохранить новый справочник и пересчитанные отчеты одной транзакцией.
+
+        Перед пересчетом создается резервная копия, если передан ``backup_path``.
+        """
+        if self.db.tax_rate_schedule() != plan.old_schedule:
+            raise ValueError(
+                "Справочник ставок изменился после предпросмотра. Повторите изменение."
+            )
+        if plan.replacements and backup_path is not None:
+            create_backup(self.paths["root"], backup_path)
+        return self.db.replace_runs(plan.replacements, tax_schedule=plan.new_schedule)
+
+    def _rebuild_run(
+        self,
+        run: RunSummary,
+        temp_root: Path,
+        current_products: dict[str, Product],
+        tax_rates: TaxRateSchedule | None = None,
+    ) -> tuple[RunCalculation, RunCalculation, dict[str, Path]]:
+        """Пересчитать сохраненный отчет из копий исходных файлов с исторической себестоимостью.
+
+        Без ``tax_rates`` используется снимок ставок самого отчета. Возвращает прежний и новый
+        расчеты и соответствие исходных файлов их уже сохраненным копиям.
+        """
+        old = self.db.load_calculation(run.id)
+        source_records = self.db.list_source_files(run.id)
+        if not source_records:
+            raise ValueError(
+                f"У отчета «{run.report_name}» нет сохраненных исходных файлов. "
+                "История не изменена."
+            )
+
+        run_root = temp_root / str(run.id)
+        run_root.mkdir(parents=True)
+        parsed_sources: list[ParsedSource] = []
+        stored_paths: dict[str, Path] = {}
+        for index, record in enumerate(source_records, start=1):
+            stored_path = Path(str(record["stored_path"]))
+            if not stored_path.is_file():
+                raise ValueError(
+                    f"Не найден сохраненный исходный файл «{record['original_name']}» "
+                    f"для отчета «{run.report_name}». История не изменена."
+                )
+            original_name = Path(str(record["original_name"])).name
+            destination = run_root / original_name
+            if destination.exists():
+                destination = run_root / f"{index}_{original_name}"
+            shutil.copy2(stored_path, destination)
+            source = parse_report(destination)
+            source.duplicate_run_ids = self.db.find_runs_by_hash(source.file_hash)
+            parsed_sources.append(source)
+            stored_paths[str(source.path)] = stored_path
+
+        historical_products = {
+            item.article: Product(
+                article=item.article,
+                name=item.name,
+                material_cost=item.material_cost,
+                labor_cost=item.labor_cost,
+                active=True,
+                category=item.category,
+            )
+            for item in old.products
+        }
+        referenced_articles = {
+            row.article
+            for source in parsed_sources
+            for row in source.accrual_rows
+            if row.article
+        } | {
+            row.raw_article
+            for source in parsed_sources
+            for row in source.realization_rows
+            if row.raw_article
+        }
+        for article in referenced_articles:
+            if article not in historical_products and article in current_products:
+                historical_products[article] = current_products[article]
+
+        calculation = calculate_run(
+            parsed_sources,
+            historical_products,
+            tax_rates or old.tax_schedule or old.tax_rate,
+        )
+        calculation.source_period_warnings = list(old.source_period_warnings)
+        calculation.double_count_warnings = list(old.double_count_warnings)
+        return old, calculation, stored_paths
 
 
 def _result_has_activity(item) -> bool:
