@@ -10,6 +10,7 @@ from openpyxl.workbook.properties import CalcProperties
 
 from .config import resource_path
 from .database import Database
+from .display_labels import NO_COST_TEXT, NO_SALES_TEXT
 from .models import ProductResult, RunCalculation
 from .tax_rates import format_applied_rates
 
@@ -143,7 +144,7 @@ def _write_product_row(
         else f"=E{row}*Q{row}"
     )
     ws[f"H{row}"] = f"=F{row}+G{row}"
-    ws[f"I{row}"] = f"=IFERROR(J{row}/C{row},0)"
+    ws[f"I{row}"] = _profitability_formula(row, f"IFERROR(J{row}/C{row},0)")
     ws[f"J{row}"] = f"=IFERROR(L{row}/Q{row},0)"
     ws[f"K{row}"] = f"=IFERROR(M{row}/Q{row},0)"
     ws[f"L{row}"] = f"=M{row}-H{row}-O{row}"
@@ -166,7 +167,9 @@ def _write_product_row(
     ws[f"AL{row}"] = f"=IFERROR(R{row}/Q{row},\"\")"
     ws[f"AM{row}"] = f"=IF(OR(AL{row}=\"\",AN{row}=\"\"),\"\",IFERROR(AN{row}/AL{row}-1,0))"
     ws[f"AN{row}"] = planned_price if planned_price is not None else result.average_price()
-    ws[f"AO{row}"] = f"=IF(OR(Q{row}=0,AN{row}=\"\"),\"\",IFERROR(AY{row}/C{row},0))"
+    ws[f"AO{row}"] = _profitability_formula(
+        row, f"IF(OR(Q{row}=0,AN{row}=\"\"),\"\",IFERROR(AY{row}/C{row},0))"
+    )
     ws[f"AP{row}"] = f"=IF(Q{row}=0,\"\",R{row}-M{row}+V{row})"
     ws[f"AQ{row}"] = f"=IF(OR(AN{row}=\"\",Q{row}=0),\"\",AN{row}*Q{row})"
     ws[f"AR{row}"] = f"=IF(OR(R{row}=0,Q{row}=0),\"\",IFERROR(-V{row}/R{row},0))"
@@ -177,6 +180,17 @@ def _write_product_row(
     ws[f"AW{row}"] = f"=IF(AQ{row}=\"\",\"\",AQ{row}-AP{row}+AS{row}-AV{row})"
     ws[f"AX{row}"] = f"=IF(OR(AW{row}=\"\",Q{row}=0),\"\",AW{row}/Q{row})"
     ws[f"AY{row}"] = f"=IF(AX{row}=\"\",\"\",AX{row}-C{row})"
+
+
+def _profitability_formula(row: int, expression: str) -> str:
+    """Show «Нет продаж» / «Нет себестоимости» instead of 0% as in the application.
+
+    Only the label is added around the unchanged profitability expression.
+    """
+    return (
+        f'=IF(Q{row}<=0,"{NO_SALES_TEXT}",'
+        f'IF(C{row}<=0,"{NO_COST_TEXT}",{expression}))'
+    )
 
 
 def scenario_tax_rate_caption(calculation: RunCalculation) -> str:

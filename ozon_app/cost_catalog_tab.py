@@ -1,15 +1,100 @@
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import ttk
+from pathlib import Path
+from tkinter import messagebox, ttk
+from typing import Iterable
+
+from openpyxl import load_workbook
 
 from .catalog_category_filters import CatalogAndCategoryOZPriceAnalyzerApp
+from .costs import CostCatalogError, _find_catalog_sheet
 from .display_modes import (
     _TableModeController,
     _button_with_text,
     resolve_ui_scale,
 )
+from .excel_reader import display_text, is_numeric, normalize_text
+from .models import Product
 from .resizable_layout import _GridSplitter, _hide_label_with_text
+
+
+SHOW_SKIPPED_ROWS_TEXT = "Показать пропущенные строки"
+_WARNING_LIST_LIMIT = 25
+
+
+def catalog_positions_without_full_cost(products: Iterable[Product]) -> list[str]:
+    """Catalog positions whose full cost is 0 ₽ (profitability shows «Нет себестоимости»)."""
+    return [
+        f"Артикул {product.article} «{product.name}»: полная себестоимость 0 ₽"
+        for product in products
+        if product.total_cost <= 0
+    ]
+
+
+def rows_without_full_cost(path: str | Path) -> list[str]:
+    """Rows of a catalog XLSX without a full cost.
+
+    Read-only diagnostics for the warning: the import rule itself is unchanged,
+    a file with such rows is still rejected as a whole.
+    """
+    try:
+        workbook = load_workbook(Path(path), read_only=True, data_only=True)
+    except Exception:
+        return []
+    try:
+        try:
+            ws, header_row, columns = _find_catalog_sheet(workbook)
+        except CostCatalogError:
+            return []
+        article_column = columns[normalize_text("Артикул")]
+        name_column = columns[normalize_text("Наименование")]
+        total_column = columns[normalize_text("Полная себестоимость, руб.")]
+        labor_column = columns[normalize_text("Трудозатраты, руб.")]
+        rows: list[str] = []
+        for row_number in range(header_row + 1, int(ws.max_row or header_row) + 1):
+            article = display_text(ws.cell(row_number, article_column).value)
+            name = display_text(ws.cell(row_number, name_column).value)
+            total_value = ws.cell(row_number, total_column).value
+            labor_value = ws.cell(row_number, labor_column).value
+            if not article and not name and total_value in (None, "") and labor_value in (None, ""):
+                continue
+            if not is_numeric(total_value):
+                rows.append(
+                    f"Строка {row_number}, артикул {article or 'не указан'}: "
+                    "не заполнена полная себестоимость"
+                )
+        return rows
+    finally:
+        workbook.close()
+
+
+def cost_catalog_warning_text(
+    zero_cost: list[str],
+    rejected_rows: list[str],
+    rejected_source: str = "",
+) -> str:
+    """Text of the permanent warning above the catalog table ("" — no warning)."""
+    parts: list[str] = []
+    if rejected_rows:
+        source = f" «{rejected_source}»" if rejected_source else ""
+        parts.append(
+            f"Последний XLSX{source} не загружен: строк без полной себестоимости — "
+            f"{len(rejected_rows)}. Справочник не изменен."
+        )
+    if zero_cost:
+        parts.append(
+            f"Позиций с полной себестоимостью 0 ₽: {len(zero_cost)} — их доходность "
+            "показывается как «Нет себестоимости»."
+        )
+    return " ".join(parts)
+
+
+def _limited_lines(lines: list[str]) -> str:
+    shown = lines[:_WARNING_LIST_LIMIT]
+    text = "\n".join(f"• {line}" for line in shown)
+    remainder = len(lines) - len(shown)
+    return text + (f"\n…и еще {remainder}" if remainder else "")
 
 
 class CostCatalogTabOZPriceAnalyzerApp(CatalogAndCategoryOZPriceAnalyzerApp):
@@ -17,6 +102,9 @@ class CostCatalogTabOZPriceAnalyzerApp(CatalogAndCategoryOZPriceAnalyzerApp):
 
     def __init__(self, *args, **kwargs) -> None:
         self._catalog_splitter_base_upper = 150
+        # Rows of the last rejected catalog XLSX; kept only until restart.
+        self.rejected_cost_catalog_rows: list[str] = []
+        self.rejected_cost_catalog_source = ""
         super().__init__(*args, **kwargs)
         self._install_cost_catalog_tab()
         self.refresh_products()
@@ -99,6 +187,27 @@ class CostCatalogTabOZPriceAnalyzerApp(CatalogAndCategoryOZPriceAnalyzerApp):
             style="Muted.TLabel",
         )
         self.catalog_help_label.grid(row=2, column=0, sticky="w", pady=(0, 8))
+
+        # Permanent warning; shown only while some rows have no full cost.
+        self.cost_catalog_warning_frame = ttk.Frame(top)
+        self.cost_catalog_warning_frame.grid(row=4, column=0, sticky="ew", pady=(0, 6))
+        self.cost_catalog_warning_frame.columnconfigure(1, weight=1)
+        self.cost_catalog_warning_var = tk.StringVar(master=self, value="")
+        self.cost_catalog_warning_button = ttk.Button(
+            self.cost_catalog_warning_frame,
+            text=SHOW_SKIPPED_ROWS_TEXT,
+            command=self.show_cost_catalog_warnings,
+        )
+        self.cost_catalog_warning_button.grid(row=0, column=0, sticky="w", padx=(0, 12))
+        self.cost_catalog_warning_label = ttk.Label(
+            self.cost_catalog_warning_frame,
+            textvariable=self.cost_catalog_warning_var,
+            style="Warning.TLabel",
+            wraplength=760,
+            justify="left",
+        )
+        self.cost_catalog_warning_label.grid(row=0, column=1, sticky="w")
+        self.cost_catalog_warning_frame.grid_remove()
 
         filters = ttk.Frame(top)
         filters.grid(row=3, column=0, sticky="ew", pady=(0, 4))
@@ -211,6 +320,77 @@ class CostCatalogTabOZPriceAnalyzerApp(CatalogAndCategoryOZPriceAnalyzerApp):
             int(round(self._catalog_splitter_base_upper * factor)),
         )
         self._catalog_splitter._apply()
+
+    def refresh_products(self) -> None:
+        super().refresh_products()
+        self._refresh_cost_catalog_warning()
+
+    def _cost_catalog_warning_lines(self) -> tuple[list[str], list[str]]:
+        zero_cost = catalog_positions_without_full_cost(self.db.list_products())
+        return zero_cost, list(getattr(self, "rejected_cost_catalog_rows", []))
+
+    def _refresh_cost_catalog_warning(self) -> None:
+        frame = getattr(self, "cost_catalog_warning_frame", None)
+        if frame is None:
+            return
+        zero_cost, rejected = self._cost_catalog_warning_lines()
+        text = cost_catalog_warning_text(
+            zero_cost,
+            rejected,
+            getattr(self, "rejected_cost_catalog_source", ""),
+        )
+        self.cost_catalog_warning_var.set(text)
+        try:
+            if text:
+                frame.grid()
+            else:
+                frame.grid_remove()
+        except tk.TclError:
+            return
+        guard = getattr(self, "_schedule_controls_guard", None)
+        if callable(guard):
+            guard()
+
+    def _remember_rejected_cost_catalog(self, source: str) -> None:
+        super()._remember_rejected_cost_catalog(source)
+        self.rejected_cost_catalog_rows = rows_without_full_cost(source)
+        self.rejected_cost_catalog_source = Path(source).name if self.rejected_cost_catalog_rows else ""
+        self._refresh_cost_catalog_warning()
+
+    def _forget_rejected_cost_catalog(self) -> None:
+        super()._forget_rejected_cost_catalog()
+        self.rejected_cost_catalog_rows = []
+        self.rejected_cost_catalog_source = ""
+
+    def show_cost_catalog_warnings(self) -> None:
+        zero_cost, rejected = self._cost_catalog_warning_lines()
+        if not zero_cost and not rejected:
+            messagebox.showinfo(
+                "Справочник себестоимости",
+                "Строк без полной себестоимости нет.",
+                parent=self,
+            )
+            return
+        sections: list[str] = []
+        if rejected:
+            source = self.rejected_cost_catalog_source
+            sections.append(
+                f"XLSX «{source}» не загружен из-за строк без полной себестоимости:\n"
+                + _limited_lines(rejected)
+                + "\n\nЗаполните полную себестоимость и загрузите исправленный файл."
+            )
+        if zero_cost:
+            sections.append(
+                "Позиции справочника с полной себестоимостью 0 ₽:\n"
+                + _limited_lines(zero_cost)
+                + "\n\nИх доходность показывается как «Нет себестоимости». "
+                "Укажите себестоимость кнопкой «Изменить выбранный»."
+            )
+        messagebox.showwarning(
+            "Пропущенные строки справочника",
+            "\n\n".join(sections),
+            parent=self,
+        )
 
     def _hide_legacy_catalog_from_settings(self, old_tree: ttk.Treeview) -> None:
         button = _button_with_text(self.settings_tab, "Редактировать справочник")

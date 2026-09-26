@@ -3,8 +3,18 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
+from .help_content import (
+    CATEGORY_CARD_HELP,
+    OVERVIEW_CARD_HELP,
+    REVENUE_SHARE_CARD_HELP,
+    card_tooltip_text,
+)
 from .overview_column_settings import OverviewColumnSettingsOZPriceAnalyzerApp
-from .ui import _money, _percent
+from .ui import _money, _percent, _profitability_text
+from .widget_tooltips import HoverTooltip
+
+
+POINTS_CARD_TITLE = "Баллы Ozon (доход)"
 
 
 def report_total_value(calculation) -> float:
@@ -16,6 +26,16 @@ def report_total_profitability(calculation) -> float:
     """Чистая прибыль от деятельности, делённая на себестоимость проданного."""
     cost_sold = float(calculation.totals()["cost_sold"])
     return report_total_value(calculation) / cost_sold if cost_sold else 0.0
+
+
+def report_total_profitability_text(calculation) -> str:
+    """Activity profitability, or «Нет продаж» / «Нет себестоимости» without a denominator."""
+    totals = calculation.totals()
+    return _profitability_text(
+        report_total_profitability(calculation),
+        units=totals["units"],
+        cost_sold=totals["cost_sold"],
+    )
 
 
 def overview_revenue_kpi_values(calculation) -> dict[str, str]:
@@ -37,6 +57,7 @@ class ReportTotalsOZPriceAnalyzerApp(OverviewColumnSettingsOZPriceAnalyzerApp):
         super().__init__(*args, **kwargs)
         self._install_report_total_kpi()
         self._install_revenue_share_kpis()
+        self._install_overview_card_tooltips()
         self._clarify_financial_headings()
         self.after_idle(self._refresh_report_total_kpi)
         self.after_idle(self._refresh_revenue_share_kpis)
@@ -60,6 +81,8 @@ class ReportTotalsOZPriceAnalyzerApp(OverviewColumnSettingsOZPriceAnalyzerApp):
         ) or tk.StringVar(master=self, value="—")
         card = ttk.Frame(self.kpi_frame, style="Card.TFrame", padding=(8, 5))
         card.grid(row=1, column=6, sticky="nsew", padx=(5, 0))
+        if hasattr(self, "kpi_cards"):
+            self.kpi_cards["report_total"] = card
         ttk.Label(
             card,
             text="Чистая прибыль от деятельности",
@@ -98,10 +121,12 @@ class ReportTotalsOZPriceAnalyzerApp(OverviewColumnSettingsOZPriceAnalyzerApp):
             share_frame.columnconfigure(column, weight=1)
 
         self.revenue_share_kpi_vars = {}
+        self.revenue_share_kpi_cards: dict[str, ttk.Frame] = {}
         cards = (
             ("commission", "Комиссия Ozon"),
             ("logistics", "Логистика"),
-            ("points", "Баллы"),
+            # Ozon's compensation of the buyer discount is the seller's income.
+            ("points", POINTS_CARD_TITLE),
             ("net_margin", "Чистая прибыль, %"),
         )
         for index, (key, title) in enumerate(cards):
@@ -109,6 +134,7 @@ class ReportTotalsOZPriceAnalyzerApp(OverviewColumnSettingsOZPriceAnalyzerApp):
             self.revenue_share_kpi_vars[key] = variable
             card = ttk.Frame(share_frame, style="Card.TFrame", padding=(8, 5))
             card.columnconfigure(1, weight=1)
+            self.revenue_share_kpi_cards[key] = card
             card.grid(
                 row=0,
                 column=index,
@@ -121,6 +147,21 @@ class ReportTotalsOZPriceAnalyzerApp(OverviewColumnSettingsOZPriceAnalyzerApp):
             ttk.Label(card, textvariable=variable, style="CompactKpi.TLabel").grid(
                 row=0, column=1, sticky="e", padx=(8, 0)
             )
+
+    def _install_overview_card_tooltips(self) -> None:
+        """Show the formula from «Справка» when hovering over any Overview card."""
+        self.overview_card_tooltips: dict[str, HoverTooltip] = {}
+        groups = (
+            ("", getattr(self, "kpi_cards", {}), OVERVIEW_CARD_HELP),
+            ("share:", getattr(self, "revenue_share_kpi_cards", {}), REVENUE_SHARE_CARD_HELP),
+            ("category:", getattr(self, "category_kpi_cards", {}), CATEGORY_CARD_HELP),
+        )
+        for prefix, cards, card_help in groups:
+            for key, card in cards.items():
+                if key in card_help:
+                    self.overview_card_tooltips[prefix + key] = HoverTooltip(
+                        card, card_tooltip_text(card_help[key])
+                    )
 
     def _clarify_financial_headings(self) -> None:
         self.overview_tree.heading("profit_unit", text="Финрезультат Ozon на ед.")
@@ -148,7 +189,7 @@ class ReportTotalsOZPriceAnalyzerApp(OverviewColumnSettingsOZPriceAnalyzerApp):
             profitability_variable.set("—")
             return
         variable.set(_money(report_total_value(calculation)))
-        profitability_variable.set(_percent(report_total_profitability(calculation)))
+        profitability_variable.set(report_total_profitability_text(calculation))
 
     def _refresh_revenue_share_kpis(self) -> None:
         variables = getattr(self, "revenue_share_kpi_vars", None)
