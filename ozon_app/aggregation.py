@@ -4,6 +4,7 @@ from collections import defaultdict
 from datetime import date
 
 from .models import ProductResult, RunCalculation
+from .tax_rates import merge_applied_rates
 
 
 SUM_FIELDS = (
@@ -27,7 +28,7 @@ SUM_FIELDS = (
 
 
 def aggregate_calculations(calculations: list[RunCalculation]) -> RunCalculation:
-    """Combine saved runs while preserving each run's exact costs and taxes."""
+    """Combine saved runs while preserving each run's exact costs and stored taxes."""
     if not calculations:
         raise ValueError("Для обзора не выбраны отчеты")
     ordered = sorted(
@@ -93,16 +94,22 @@ def aggregate_calculations(calculations: list[RunCalculation]) -> RunCalculation
 
     starts = [item.period_start for item in ordered if item.period_start is not None]
     ends = [item.period_end for item in ordered if item.period_end is not None]
-    taxable_total = sum(row.taxable_income for row in rows.values())
-    tax_total = sum(taxes.values())
-    effective_tax_rate = (
-        tax_total / taxable_total if taxable_total else ordered[-1].tax_rate
+    tax_starts = [item.tax_period_start for item in ordered if item.tax_period_start is not None]
+    tax_ends = [item.tax_period_end for item in ordered if item.tax_period_end is not None]
+    # Сценарий цены использует ставку самого позднего отчета на дату окончания его периода.
+    latest = max(
+        ordered,
+        key=lambda item: (
+            item.period_end or date.min,
+            item.period_start or date.min,
+            item.run_id or 0,
+        ),
     )
     return RunCalculation(
         run_id=None,
         period_start=min(starts) if starts else None,
         period_end=max(ends) if ends else None,
-        tax_rate=effective_tax_rate,
+        tax_rate=latest.tax_rate,
         products=sorted(rows.values(), key=lambda item: item.article.casefold()),
         unallocated_total=sum(item.unallocated_total for item in ordered),
         unallocated={
@@ -137,5 +144,19 @@ def aggregate_calculations(calculations: list[RunCalculation]) -> RunCalculation
             warning
             for calculation in ordered
             for warning in calculation.double_count_warnings
+        ],
+        # Налог каждого отчета уже рассчитан по ставкам на даты строк: только суммируем.
+        unallocated_income_tax_override=sum(
+            item.unallocated_income_tax for item in ordered
+        ),
+        tax_period_start=min(tax_starts) if tax_starts else None,
+        tax_period_end=max(tax_ends) if tax_ends else None,
+        applied_tax_rates=merge_applied_rates(
+            rate for calculation in ordered for rate in calculation.applied_tax_rates
+        ),
+        tax_rate_warnings=[
+            warning
+            for calculation in ordered
+            for warning in calculation.tax_rate_warnings
         ],
     )

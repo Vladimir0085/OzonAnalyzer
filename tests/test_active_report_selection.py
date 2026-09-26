@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import date
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -85,6 +86,7 @@ class _ScenarioDatabase:
 class _Calculation:
     def __init__(self, revenue: float) -> None:
         self.products: list[object] = []
+        self.period_end = date(2026, 8, 31)
         self.tax_rate = 0.06
         self.unallocated_total = revenue
         self.unallocated = {"Операция": (1, revenue)}
@@ -182,6 +184,7 @@ class ActiveReportSelectionTests(unittest.TestCase):
         app.scenario_sort_var = _Variable(SORT_NONE)
         app.scenario_sort_direction_var = _Variable(SORT_ASCENDING)
         app.scenario_count_var = _Variable()
+        app.scenario_tax_note_var = _Variable()
         app._configure_value_tags = lambda _tree: None
 
         app._populate_scenario()
@@ -189,6 +192,10 @@ class ActiveReportSelectionTests(unittest.TestCase):
         self.assertEqual(app.scenario_kpi_vars["current_revenue"].value, "300.00 ₽")
         self.assertEqual(app.db.planned_price_calls, [])
         self.assertIn("2 отчета", app.scenario_count_var.value)
+        self.assertEqual(
+            app.scenario_tax_note_var.value,
+            "Налог в сценарии: 6 % (ставка на 31.08.2026)",
+        )
 
     def test_final_app_category_scenario_uses_the_same_active_scope(self) -> None:
         app = object.__new__(CatalogAndCategoryOZPriceAnalyzerApp)
@@ -210,6 +217,7 @@ class ActiveReportSelectionTests(unittest.TestCase):
         app.scenario_sort_var = _Variable(SORT_NONE)
         app.scenario_sort_direction_var = _Variable(SORT_ASCENDING)
         app.scenario_count_var = _Variable()
+        app.scenario_tax_note_var = _Variable()
         app._sync_filter_categories = lambda _key, _values: None
         app._filter_scope = lambda _key: (set(), False)
         app._configure_value_tags = lambda _tree: None
@@ -219,6 +227,10 @@ class ActiveReportSelectionTests(unittest.TestCase):
         self.assertEqual(app.scenario_kpi_vars["current_revenue"].value, "300.00 ₽")
         self.assertEqual(app.db.planned_price_calls, [])
         self.assertIn("2 отчета", app.scenario_count_var.value)
+        self.assertEqual(
+            app.scenario_tax_note_var.value,
+            "Налог в сценарии: 6 % (ставка на 31.08.2026)",
+        )
 
     def test_multi_report_scenario_cannot_save_a_price_to_the_current_run(self) -> None:
         app = object.__new__(OZPriceAnalyzerApp)

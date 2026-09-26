@@ -7,6 +7,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from .excel_reader import all_additional_income_rows, all_rows, normalize_text
 from .models import AccrualRow, ParsedSource, Product, ProductResult, RunCalculation, ScenarioRow, UnknownProduct
+from .tax_rates import TaxRateSchedule, format_rate_percent
 
 
 class CalculationError(ValueError):
@@ -23,6 +24,8 @@ _SALE_COMPONENT_TYPES = {
     _type_key("Баллы за скидки"),
 }
 _SALES_SERVICE_GROUP = _type_key("Продажи")
+# Строки товара, входящие в налоговую базу УСН «Доходы»; баллы в базу не входят.
+_TAXABLE_PRODUCT_FIELDS = {"revenue_no_points", "partner_programs"}
 
 
 def _is_sale_component(row: AccrualRow, type_key: str) -> bool:
@@ -151,9 +154,13 @@ def discover_unknown_products(sources: list[ParsedSource], products: dict[str, P
 def calculate_run(
     sources: list[ParsedSource],
     products: dict[str, Product],
-    tax_rate: float,
+    tax_rates: TaxRateSchedule | float,
     skipped_articles: set[str] | None = None,
+    *,
+    today: date | None = None,
 ) -> RunCalculation:
+    """Рассчитать отчёт; налог каждой строки — по ставке справочника на дату этой строки."""
+    schedule = TaxRateSchedule.coerce(tax_rates)
     skipped_articles = skipped_articles or set()
     accrual_rows, realization_rows = all_rows(sources)
     additional_income_rows = all_additional_income_rows(sources)
@@ -198,6 +205,23 @@ def calculate_run(
     period_start: date | None = min(dates) if dates else None
     period_end: date | None = max(dates) if dates else None
 
+    # Строка без собственной даты облагается по ставке на дату окончания периода отчёта.
+    # Если в отчёте вообще нет дат, остаётся только ставка на сегодня.
+    fallback_tax_date = period_end or today or date.today()
+    tax_rate_warnings: list[str] = []
+    tax_dates: list[date] = []
+    product_tax_bases: dict[str, dict[float, float]] = defaultdict(lambda: defaultdict(float))
+    unallocated_tax_bases: dict[float, float] = defaultdict(float)
+    fallback_used = False
+
+    def tax_base_rate(row_date: date | None) -> float:
+        nonlocal fallback_used
+        if row_date is None:
+            fallback_used = True
+        tax_date = row_date or fallback_tax_date
+        tax_dates.append(tax_date)
+        return schedule.rate_on(tax_date)
+
     for row in accrual_rows:
         type_key = _type_key(row.accrual_type)
         stat = current_stats.setdefault(type_key, [row.accrual_type, 0, 0])
@@ -217,6 +241,8 @@ def calculate_run(
             allocated_accrual_total += row.amount
             field_name, _ = accrual_category(row.accrual_type)
             setattr(result, field_name, getattr(result, field_name) + row.amount)
+            if field_name in _TAXABLE_PRODUCT_FIELDS:
+                product_tax_bases[row.article][tax_base_rate(row.accrual_date)] += row.amount
 
             if row.sku and row.sku not in sku_conflicts:
                 existing = sku_map.get(row.sku)
@@ -243,6 +269,7 @@ def calculate_run(
             unallocated_total += row.amount
             if row.amount > 0:
                 taxable_unallocated_income += row.amount
+                unallocated_tax_bases[tax_base_rate(row.accrual_date)] += row.amount
             item = breakdown.setdefault(type_key or "без типа начисления", [row.accrual_type or "Без типа начисления", 0, 0.0])
             item[1] = int(item[1]) + 1
             item[2] = float(item[2]) + row.amount
@@ -254,6 +281,7 @@ def calculate_run(
         unallocated_total += row.amount
         if row.amount > 0:
             taxable_unallocated_income += row.amount
+            unallocated_tax_bases[tax_base_rate(row.income_date)] += row.amount
         item = breakdown.setdefault(type_key, [row.income_type, 0, 0.0])
         item[1] = int(item[1]) + 1
         item[2] = float(item[2]) + row.amount
@@ -271,6 +299,10 @@ def calculate_run(
         if article in results:
             results[article].units -= quantity
 
+    realization_source_by_row = {
+        id(row): source for source in sources for row in source.realization_rows
+    }
+    undated_realization_sources: dict[int, ParsedSource] = {}
     realization_keys: dict[tuple[str, str], tuple[float, float, str]] = {}
     duplicate_rows = 0
     already_accrued_rows = 0
@@ -317,6 +349,13 @@ def calculate_run(
         result.financial_result += row.amount
         realization_revenue += row.amount
         realization_units += row.quantity
+        realization_source = realization_source_by_row.get(id(row))
+        tax_date = row.sale_date
+        if tax_date is None:
+            if realization_source is not None:
+                undated_realization_sources[id(realization_source)] = realization_source
+                tax_date = realization_source.period_end
+        product_tax_bases[article][tax_base_rate(tax_date)] += row.amount
 
     source_accrual_total = sum(row.amount for row in accrual_rows) + sum(
         row.amount for row in additional_income_rows
@@ -344,6 +383,50 @@ def calculate_run(
         if details:
             skipped_detail[article] = f"{message}; пропущенная сумма — {', '.join(details)}"
 
+    for source in undated_realization_sources.values():
+        start = source.period_start or period_start
+        end = source.period_end or period_end
+        if start is None or end is None:
+            continue
+        changes = schedule.rate_changes(start, end)
+        if not changes:
+            continue
+        tax_date = source.period_end or fallback_tax_date
+        change_text = ", ".join(
+            f"с {changed:%d.%m.%Y}: {format_rate_percent(old)} → {format_rate_percent(new)}"
+            for changed, old, new in changes
+        )
+        tax_rate_warnings.append(
+            f"«{source.path.name}»: период выкупов {start:%d.%m.%Y}–{end:%d.%m.%Y} "
+            f"пересекает смену налоговой ставки ({change_text}). В файле нет дат строк, "
+            f"поэтому налог с выкупов рассчитан по ставке на {tax_date:%d.%m.%Y} — "
+            f"{format_rate_percent(schedule.rate_on(tax_date))}."
+        )
+    if period_end is None and fallback_used:
+        tax_rate_warnings.append(
+            "В отчёте по начислениям нет дат, поэтому налог рассчитан по ставке на "
+            f"{fallback_tax_date:%d.%m.%Y} — {format_rate_percent(schedule.rate_on(fallback_tax_date))}."
+        )
+
+    for article, bases in product_tax_bases.items():
+        if article in results:
+            results[article].tax_override = sum(base * rate for rate, base in bases.items())
+    for result in results.values():
+        if result.tax_override is None:
+            result.tax_override = 0.0
+    unallocated_income_tax = sum(base * rate for rate, base in unallocated_tax_bases.items())
+
+    source_dates = [
+        value
+        for source in sources
+        for value in (source.period_start, source.period_end)
+        if value is not None
+    ]
+    period_dates = [value for value in (period_start, period_end) if value is not None]
+    all_tax_dates = tax_dates + source_dates + period_dates
+    tax_period_start = min(all_tax_dates) if all_tax_dates else None
+    tax_period_end = max(all_tax_dates) if all_tax_dates else None
+
     stats = {
         str(values[0]): (int(values[1]), int(values[2]))
         for values in sorted(current_stats.values(), key=lambda value: str(value[0]).casefold())
@@ -356,7 +439,7 @@ def calculate_run(
         run_id=None,
         period_start=period_start,
         period_end=period_end,
-        tax_rate=tax_rate,
+        tax_rate=schedule.rate_on(fallback_tax_date),
         products=sorted(results.values(), key=lambda item: item.article.casefold()),
         unallocated_total=unallocated_total,
         unallocated=unallocated,
@@ -369,6 +452,16 @@ def calculate_run(
         realization_revenue=realization_revenue,
         realization_units=realization_units,
         taxable_unallocated_income_override=taxable_unallocated_income,
+        unallocated_income_tax_override=unallocated_income_tax,
+        tax_schedule=schedule,
+        tax_period_start=tax_period_start,
+        tax_period_end=tax_period_end,
+        applied_tax_rates=(
+            schedule.applied_rates(tax_period_start, tax_period_end)
+            if tax_period_start is not None
+            else []
+        ),
+        tax_rate_warnings=tax_rate_warnings,
     )
 
 

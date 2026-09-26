@@ -320,6 +320,9 @@ def _parse_realization(ws, header_row: int, parsed: ParsedSource) -> None:
     unit_price_column = _find_in_rows(ws, header_row, min(header_row + 2, max_row), "Цена реализации с НДС, руб.")
     quantity_column = _find_in_rows(ws, header_row, min(header_row + 2, max_row), "Кол-во")
     total_column = _find_in_rows(ws, header_row, min(header_row + 2, max_row), "Итого к начислению, руб.")
+    # BuyoutDetails: дата отчёта о выкупе по каждой строке («Отчёт о выкупленных товарах» → «Дата»).
+    # В RealizationReportCIS такой колонки нет, тогда дата строки не заполняется.
+    date_column = _find_in_rows(ws, header_row, min(header_row + 2, max_row), "Дата")
     required_positions = [article_column, sku_column, shipment_column, unit_price_column, quantity_column, total_column]
     if not all(required_positions):
         raise ReportFormatError(f"В отчете о выкупленных товарах изменились заголовки: {parsed.path.name}")
@@ -352,6 +355,7 @@ def _parse_realization(ws, header_row: int, parsed: ParsedSource) -> None:
                 unit_price=unit_price,
                 quantity=quantity,
                 amount=amount,
+                sale_date=as_date(ws.cell(row_number, date_column).value) if date_column else None,
             )
         )
     if not parsed.realization_rows:

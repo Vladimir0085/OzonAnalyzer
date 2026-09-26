@@ -5,6 +5,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from .tax_rates import AppliedTaxRate, TaxRateSchedule
+
 
 @dataclass(slots=True)
 class Product:
@@ -50,6 +52,7 @@ class RealizationRow:
     unit_price: float
     quantity: float
     amount: float
+    sale_date: date | None = None
 
 
 @dataclass(slots=True)
@@ -126,6 +129,8 @@ class ProductResult:
     financial_result: float = 0.0
     material_sold_override: float | None = None
     labor_sold_override: float | None = None
+    # Налог по ставкам на даты строк, рассчитанный при импорте и сохранённый в базе.
+    # None — только у вручную созданных строк: тогда налог = база × ставка.
     tax_override: float | None = None
 
     @property
@@ -209,6 +214,7 @@ class RunCalculation:
     run_id: int | None
     period_start: date | None
     period_end: date | None
+    # Ставка на дату окончания периода отчёта; используется в сценарии цены.
     tax_rate: float
     products: list[ProductResult]
     unallocated_total: float
@@ -224,6 +230,16 @@ class RunCalculation:
     source_period_warnings: list[str] = field(default_factory=list)
     taxable_unallocated_income_override: float | None = None
     double_count_warnings: list[str] = field(default_factory=list)
+    # Налог с положительных нераспределённых доходов по ставкам на даты строк.
+    unallocated_income_tax_override: float | None = None
+    # Справочник ставок, по которому рассчитан отчёт (снимок на момент расчёта).
+    tax_schedule: TaxRateSchedule | None = None
+    # Интервал дат строк, вошедших в налоговую базу.
+    tax_period_start: date | None = None
+    tax_period_end: date | None = None
+    # Ставки, фактически применённые в интервале дат отчёта.
+    applied_tax_rates: list[AppliedTaxRate] = field(default_factory=list)
+    tax_rate_warnings: list[str] = field(default_factory=list)
 
     @property
     def taxable_unallocated_income(self) -> float:
@@ -234,10 +250,13 @@ class RunCalculation:
 
     @property
     def unallocated_income_tax(self) -> float:
+        if self.unallocated_income_tax_override is not None:
+            return self.unallocated_income_tax_override
         return self.taxable_unallocated_income * self.tax_rate
 
     @property
     def report_net_profit(self) -> float:
+        """Чистая прибыль от деятельности: товары после налога + нераспределённые − налог с них."""
         product_net_profit = sum(item.net_profit(self.tax_rate) for item in self.products)
         return product_net_profit + self.unallocated_total - self.unallocated_income_tax
 

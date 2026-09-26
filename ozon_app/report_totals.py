@@ -8,12 +8,12 @@ from .ui import _money, _percent
 
 
 def report_total_value(calculation) -> float:
-    """Return report profit after tax on positive unallocated Ozon income."""
+    """Чистая прибыль от деятельности: товары после налога + нераспределённые − налог с них."""
     return float(calculation.report_net_profit)
 
 
 def report_total_profitability(calculation) -> float:
-    """Return report profit after tax divided by the cost of goods sold."""
+    """Чистая прибыль от деятельности, делённая на себестоимость проданного."""
     cost_sold = float(calculation.totals()["cost_sold"])
     return report_total_value(calculation) / cost_sold if cost_sold else 0.0
 
@@ -62,7 +62,7 @@ class ReportTotalsOZPriceAnalyzerApp(OverviewColumnSettingsOZPriceAnalyzerApp):
         card.grid(row=1, column=6, sticky="nsew", padx=(5, 0))
         ttk.Label(
             card,
-            text="Итог с нераспределёнными после налога",
+            text="Чистая прибыль от деятельности",
             style="CompactCardMuted.TLabel",
         ).grid(row=0, column=0, columnspan=2, sticky="w")
         ttk.Label(
