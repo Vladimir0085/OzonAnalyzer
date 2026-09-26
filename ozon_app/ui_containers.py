@@ -5,28 +5,44 @@ from tkinter import ttk
 
 
 def wrapped_positions(
-    sizes: list[tuple[int, int]], available_width: int, gap: int = 8, row_gap: int = 4
+    sizes: list[tuple[int, int]],
+    available_width: int,
+    gap: int = 8,
+    row_gap: int = 4,
+    *,
+    align_right: bool = False,
 ) -> tuple[list[tuple[int, int]], int]:
     """Wrap whole control groups without splitting labels from their inputs."""
     width = max(1, available_width)
     positions = []
+    rows: list[list[int]] = []
     x = y = row_height = 0
-    for item_width, item_height in sizes:
+    for index, (item_width, item_height) in enumerate(sizes):
         if x and x + item_width > width:
             x = 0
             y += row_height + row_gap
             row_height = 0
+        if x == 0:
+            rows.append([])
+        rows[-1].append(index)
         positions.append((x, y))
         x += item_width + gap
         row_height = max(row_height, item_height)
+    if align_right:
+        for row in rows:
+            last = row[-1]
+            shift = max(0, width - (positions[last][0] + sizes[last][0]))
+            for index in row:
+                positions[index] = (positions[index][0] + shift, positions[index][1])
     return positions, y + row_height
 
 
 class WrappingToolbar(ttk.Frame):
     """A naturally sized toolbar that reflows at the actual window/DPI width."""
 
-    def __init__(self, parent: tk.Misc) -> None:
+    def __init__(self, parent: tk.Misc, *, align_right: bool = False) -> None:
         super().__init__(parent, height=1)
+        self.align_right = align_right
         self.groups: list[ttk.Frame] = []
         self._layout_pending = False
         self.bind("<Configure>", self._schedule_layout)
@@ -49,12 +65,19 @@ class WrappingToolbar(ttk.Frame):
         if not self.winfo_exists():
             return
         sizes = [(group.winfo_reqwidth(), group.winfo_reqheight()) for group in self.groups]
-        positions, height = wrapped_positions(sizes, self.winfo_width())
+        positions, height = wrapped_positions(
+            sizes, self.winfo_width(), align_right=self.align_right
+        )
         for group, (x, y) in zip(self.groups, positions):
             group.place_configure(x=x, y=y)
         height = max(1, height)
         if self.winfo_reqheight() != height:
             self.configure(height=height)
+        if self.align_right:
+            # Reserve the widest group so the parent grid never clips a whole group.
+            widest = max((size[0] for size in sizes), default=1)
+            if self.winfo_reqwidth() != widest:
+                self.configure(width=widest)
 
 
 def summary_scrollbars(

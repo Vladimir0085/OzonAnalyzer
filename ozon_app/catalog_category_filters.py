@@ -15,11 +15,12 @@ from .ui import (
     _category_label,
     _money,
     _number,
-    _percent,
+    _profitability_text,
     _result_values,
     _russian_position_word,
     _russian_report_count,
     _scenario_values,
+    category_profitability_text,
     filter_product_results,
     filter_scenario_rows,
     scenario_tax_note,
@@ -353,7 +354,13 @@ class CatalogAndCategoryOZPriceAnalyzerApp(LaptopFriendlyOZPriceAnalyzerApp):
         cost = totals["cost_sold"]
         self.kpi_vars["revenue"].set(_money(totals["revenue"]))
         self.kpi_vars["net_profit"].set(_money(totals["net_profit"]))
-        self.kpi_vars["profitability"].set(_percent(totals["net_profit"] / cost if cost else 0))
+        self.kpi_vars["profitability"].set(
+            _profitability_text(
+                totals["net_profit"] / cost if cost else 0.0,
+                units=totals["units"],
+                cost_sold=cost,
+            )
+        )
         self.kpi_vars["units"].set(_number(totals["units"]))
         self.kpi_vars["unallocated"].set(_money(totals["unallocated"]))
         self.kpi_vars["files"].set(str(self.overview_file_count))
@@ -377,7 +384,7 @@ class CatalogAndCategoryOZPriceAnalyzerApp(LaptopFriendlyOZPriceAnalyzerApp):
         )
         self.category_kpi_vars["revenue"].set(_money(category_totals["revenue"]))
         self.category_kpi_vars["net_profit"].set(_money(category_totals["net_profit"]))
-        self.category_kpi_vars["profitability"].set(_percent(category_totals["profitability"]))
+        self.category_kpi_vars["profitability"].set(category_profitability_text(category_totals))
         self.category_kpi_vars["units"].set(_number(category_totals["units"]))
         self.category_kpi_vars["cost_sold"].set(_money(category_totals["cost_sold"]))
         self.category_kpi_vars["financial_result"].set(_money(category_totals["financial_result"]))
@@ -462,7 +469,11 @@ class CatalogAndCategoryOZPriceAnalyzerApp(LaptopFriendlyOZPriceAnalyzerApp):
         self.scenario_kpi_vars["planned_revenue"].set(_money(planned_revenue_total))
         self.scenario_kpi_vars["planned_net"].set(_money(planned_net_total))
         self.scenario_kpi_vars["planned_margin"].set(
-            _percent(planned_net_total / planned_cost_total if planned_cost_total else 0)
+            _profitability_text(
+                planned_net_total / planned_cost_total if planned_cost_total else 0.0,
+                units=totals["units"],
+                cost_sold=planned_cost_total,
+            )
         )
         self.scenario_tax_note_var.set(scenario_tax_note(calculation))
         scope_note = ""
