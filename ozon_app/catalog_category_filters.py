@@ -416,6 +416,7 @@ class CatalogAndCategoryOZPriceAnalyzerApp(LaptopFriendlyOZPriceAnalyzerApp):
         self._populate_overview()
 
     def _populate_scenario(self) -> None:
+        self._close_scenario_price_editor()
         calculation = self._active_report_calculation()
         self.scenario_tree.delete(*self.scenario_tree.get_children())
         self.scenario_rows.clear()

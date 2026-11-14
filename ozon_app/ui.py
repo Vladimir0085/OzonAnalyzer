@@ -181,6 +181,8 @@ class OZPriceAnalyzerApp(tk.Tk):
         self.preview_rows: list[list[str]] = []
         self.preview_path: str | None = None
         self.scenario_rows: dict[str, ScenarioRow] = {}
+        self._scenario_price_editor: ttk.Entry | None = None
+        self._scenario_price_editor_article: str | None = None
         self.trend_points: list[TrendPoint] = []
         self.trend_canvas_points: list[tuple[float, float, TrendPoint]] = []
         self.import_in_progress = False
@@ -560,10 +562,22 @@ class OZPriceAnalyzerApp(tk.Tk):
         scenario_top.grid(row=2, column=0, sticky="ew", pady=(0, 10))
         self.scenario_price_controls = scenario_top
         price_group = scenario_top.add_group()
-        ttk.Label(price_group, text="Плановая цена выбранного товара:").grid(row=0, column=0, padx=(0, 6))
+        ttk.Label(price_group, text="Плановая цена выбранной позиции:").grid(row=0, column=0, padx=(0, 6))
         self.planned_price_var = tk.StringVar()
-        ttk.Entry(price_group, textvariable=self.planned_price_var, width=16).grid(row=0, column=1, padx=(0, 6))
-        ttk.Button(price_group, text="Применить", command=self.apply_planned_price).grid(row=0, column=2, padx=(0, 10))
+        self.planned_price_entry = ttk.Entry(
+            price_group, textvariable=self.planned_price_var, width=16
+        )
+        self.planned_price_entry.grid(row=0, column=1, padx=(0, 6))
+        self.planned_price_entry.bind("<Return>", self._apply_planned_price_from_entry)
+        self.planned_price_entry.bind("<KP_Enter>", self._apply_planned_price_from_entry)
+        ttk.Button(price_group, text="Сохранить цену", command=self.apply_planned_price).grid(
+            row=0, column=2, padx=(0, 8)
+        )
+        ttk.Label(
+            price_group,
+            text="F2 или двойной щелчок по ячейке",
+            style="Muted.TLabel",
+        ).grid(row=0, column=3, padx=(0, 10))
         percent_group = scenario_top.add_group()
         ttk.Label(percent_group, text="Изменить цену на, %:").grid(row=0, column=0, padx=(0, 6))
         self.batch_percent_var = tk.StringVar(value="5")
@@ -639,6 +653,8 @@ class OZPriceAnalyzerApp(tk.Tk):
             widths=[width for _column_id, _heading, width in SCENARIO_COLUMN_SPECS],
         )
         self.scenario_tree.bind("<<TreeviewSelect>>", self._on_scenario_selected)
+        self.scenario_tree.bind("<Double-1>", self._on_scenario_double_click, add="+")
+        self.scenario_tree.bind("<F2>", self._start_scenario_price_edit, add="+")
 
         self.scenario_kpi_frame = ttk.Frame(self.scenario_tab)
         self.scenario_kpi_frame.grid(row=5, column=0, sticky="ew", pady=(10, 0))
@@ -1597,6 +1613,7 @@ class OZPriceAnalyzerApp(tk.Tk):
             )
 
     def _populate_scenario(self) -> None:
+        self._close_scenario_price_editor()
         calculation = self._active_report_calculation()
         self.scenario_tree.delete(*self.scenario_tree.get_children())
         self.scenario_rows.clear()
@@ -1667,6 +1684,123 @@ class OZPriceAnalyzerApp(tk.Tk):
         row = self.scenario_rows.get(selection[0])
         self.planned_price_var.set(_plain_number(row.planned_price) if row and row.planned_price is not None else "")
 
+    def _apply_planned_price_from_entry(self, _event=None) -> str:
+        self.apply_planned_price()
+        return "break"
+
+    def _on_scenario_double_click(self, event) -> str | None:
+        article = self.scenario_tree.identify_row(event.y)
+        if not article or self.scenario_tree.identify_region(event.x, event.y) != "cell":
+            return None
+        bounds = self.scenario_tree.bbox(article, "planned_price")
+        if not bounds:
+            return None
+        x, y, width, height = bounds
+        if not (x <= event.x < x + width and y <= event.y < y + height):
+            return None
+        self.scenario_tree.selection_set(article)
+        self.scenario_tree.focus(article)
+        return self._start_scenario_price_edit(article=article)
+
+    def _start_scenario_price_edit(self, _event=None, *, article: str | None = None) -> str:
+        if article is None:
+            selection = self.scenario_tree.selection()
+            article = selection[0] if selection else None
+        if not article or not self.scenario_tree.exists(article):
+            messagebox.showinfo("Плановая цена", "Сначала выберите товар в таблице", parent=self)
+            return "break"
+
+        self._close_scenario_price_editor()
+        self.scenario_tree.see(article)
+        self.scenario_tree.update_idletasks()
+        bounds = self.scenario_tree.bbox(article, "planned_price")
+        if not bounds:
+            # The column may be hidden in the column settings. The ordinary field
+            # above the table remains available in that case.
+            self.scenario_tree.selection_set(article)
+            self._on_scenario_selected()
+            self.planned_price_entry.focus_set()
+            self.planned_price_entry.selection_range(0, tk.END)
+            return "break"
+
+        row = self.scenario_rows.get(article)
+        initial_value = (
+            _plain_number(row.planned_price)
+            if row is not None and row.planned_price is not None
+            else ""
+        )
+        editor = ttk.Entry(self.scenario_tree)
+        editor.insert(0, initial_value)
+        x, y, width, height = bounds
+        editor.place(x=x, y=y, width=width, height=height)
+        editor.bind("<Return>", self._commit_scenario_price_edit)
+        editor.bind("<KP_Enter>", self._commit_scenario_price_edit)
+        editor.bind("<Escape>", self._cancel_scenario_price_edit)
+        editor.bind("<FocusOut>", self._commit_scenario_price_edit)
+        self._scenario_price_editor = editor
+        self._scenario_price_editor_article = article
+        editor.focus_set()
+        editor.selection_range(0, tk.END)
+        return "break"
+
+    def _commit_scenario_price_edit(self, _event=None) -> str:
+        editor = self._scenario_price_editor
+        article = self._scenario_price_editor_article
+        if editor is None or article is None:
+            return "break"
+        raw_value = editor.get()
+        self._close_scenario_price_editor()
+        if not self._save_planned_price(article, raw_value):
+            self.scenario_tree.selection_set(article)
+            self.planned_price_var.set(raw_value)
+            self.planned_price_entry.focus_set()
+            self.planned_price_entry.selection_range(0, tk.END)
+        return "break"
+
+    def _cancel_scenario_price_edit(self, _event=None) -> str:
+        article = self._scenario_price_editor_article
+        self._close_scenario_price_editor()
+        if article and self.scenario_tree.exists(article):
+            self.scenario_tree.selection_set(article)
+            self.scenario_tree.focus(article)
+        return "break"
+
+    def _close_scenario_price_editor(self) -> None:
+        # Some calculation tests construct the application class without a Tk
+        # interpreter. Reading __dict__ avoids tkinter.Misc.__getattr__ recursion
+        # for those lightweight objects.
+        editor = self.__dict__.get("_scenario_price_editor")
+        self._scenario_price_editor = None
+        self._scenario_price_editor_article = None
+        if editor is not None and editor.winfo_exists():
+            editor.destroy()
+
+    def _save_planned_price(
+        self,
+        article: str,
+        raw_value: str,
+        *,
+        run_id: int | None = None,
+    ) -> bool:
+        if run_id is None:
+            run_id = self._active_single_run_id(notify=True)
+        if run_id is None:
+            return False
+        try:
+            value = _parse_number(raw_value)
+            if value < 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Плановая цена", "Введите неотрицательную цену", parent=self)
+            return False
+        self.db.save_planned_price(run_id, article, value)
+        self._populate_scenario()
+        if self.scenario_tree.exists(article):
+            self.scenario_tree.selection_set(article)
+            self.scenario_tree.focus(article)
+            self.scenario_tree.see(article)
+        return True
+
     def apply_planned_price(self) -> None:
         run_id = self._active_single_run_id(notify=True)
         if run_id is None:
@@ -1675,16 +1809,7 @@ class OZPriceAnalyzerApp(tk.Tk):
         if not selection:
             messagebox.showinfo("Плановая цена", "Сначала выберите товар в таблице", parent=self)
             return
-        try:
-            value = _parse_number(self.planned_price_var.get())
-            if value < 0:
-                raise ValueError
-        except ValueError:
-            messagebox.showerror("Плановая цена", "Введите неотрицательную цену", parent=self)
-            return
-        self.db.save_planned_price(run_id, selection[0], value)
-        self._populate_scenario()
-        self.scenario_tree.selection_set(selection[0])
+        self._save_planned_price(selection[0], self.planned_price_var.get(), run_id=run_id)
 
     def apply_batch_percent(self) -> None:
         run_id = self._active_single_run_id(notify=True)

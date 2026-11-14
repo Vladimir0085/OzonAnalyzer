@@ -34,6 +34,9 @@ class _ScenarioTree:
     def see(self, article: str) -> None:
         self.visible = article
 
+    def exists(self, article: str) -> bool:
+        return article in {"A-1", "A-2"}
+
 
 class _Database:
     def __init__(self) -> None:
@@ -49,6 +52,36 @@ class _ScenarioRow:
 
 
 class ScenarioControlTests(unittest.TestCase):
+    def test_absolute_price_is_saved_for_one_position_and_selection_is_restored(self) -> None:
+        app = object.__new__(OZPriceAnalyzerApp)
+        app.scenario_tree = _ScenarioTree(("A-2",))
+        app.db = _Database()
+        app._active_single_run_id = lambda notify=False: 12
+
+        def populate() -> None:
+            app.scenario_tree.current_selection = ()
+
+        app._populate_scenario = populate
+
+        self.assertTrue(app._save_planned_price("A-2", "2 500,50"))
+        self.assertEqual(app.db.saved, [(12, "A-2", 2500.5)])
+        self.assertEqual(app.scenario_tree.selected, "A-2")
+        self.assertEqual(app.scenario_tree.focused, "A-2")
+        self.assertEqual(app.scenario_tree.visible, "A-2")
+
+    def test_negative_absolute_price_is_rejected(self) -> None:
+        app = object.__new__(OZPriceAnalyzerApp)
+        app.scenario_tree = _ScenarioTree(("A-2",))
+        app.db = _Database()
+        app._active_single_run_id = lambda notify=False: 12
+        app._populate_scenario = lambda: None
+
+        with patch("ozon_app.ui.messagebox.showerror") as showerror:
+            self.assertFalse(app._save_planned_price("A-2", "-1"))
+
+        self.assertEqual(app.db.saved, [])
+        showerror.assert_called_once()
+
     def test_percent_is_applied_only_to_highlighted_row_and_selection_is_restored(self) -> None:
         app = object.__new__(OZPriceAnalyzerApp)
         app.current_run_id = 12

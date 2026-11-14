@@ -277,6 +277,8 @@ class HelpAndCardTextTests(unittest.TestCase):
         self.assertIn("доход продавца, а не расход", text)
         self.assertIn("«№4 · 01.08–31.08.2026»", text)
         self.assertIn("Наведите указатель на любую карточку", text)
+        self.assertIn("нажмите F2", text)
+        self.assertIn("нажмите Enter", text)
         self.assertIn("Показать пропущенные строки", help_plain_text(REPORTS_HELP_CONTENT))
 
     def test_points_card_title(self) -> None:
@@ -476,6 +478,59 @@ class InterfaceTkTests(unittest.TestCase):
                         self.app.scenario_tree.winfo_rooty(),
                         self.app.scenario_filters.winfo_rooty() + self.app.scenario_filters.winfo_height(),
                     )
+
+    def test_planned_price_can_be_edited_directly_in_the_scenario_table(self) -> None:
+        self.app.notebook.select(self.app.scenario_tab)
+        self.app.run_var.set("№1 · Июль — проверено")
+        self.app._on_run_selected()
+        self.app.geometry("1540x920+0+0")
+        self.settle()
+
+        article = "A"
+        before_profitability = self.app.scenario_tree.set(article, "profitability")
+        self.app.scenario_tree.selection_set(article)
+        self.assertEqual(self.app._start_scenario_price_edit(), "break")
+        self.settle()
+
+        editor = self.app._scenario_price_editor
+        self.assertIsNotNone(editor)
+        assert editor is not None
+        self.assertEqual(self.app._scenario_price_editor_article, article)
+        editor.delete(0, tk.END)
+        editor.insert(0, "2500,50")
+        self.assertEqual(self.app._commit_scenario_price_edit(), "break")
+        self.settle()
+
+        self.assertIsNone(self.app._scenario_price_editor)
+        self.assertEqual(self.app.db.planned_prices(self.july_id), {article: 2500.5})
+        self.assertEqual(self.app.scenario_tree.selection(), (article,))
+        self.assertEqual(self.app.scenario_tree.set(article, "planned_price"), "2 500.50 ₽")
+        self.assertNotEqual(
+            self.app.scenario_tree.set(article, "profitability"),
+            before_profitability,
+        )
+
+    def test_escape_cancels_inline_planned_price_edit(self) -> None:
+        self.app.notebook.select(self.app.scenario_tab)
+        self.app.run_var.set("№1 · Июль — проверено")
+        self.app._on_run_selected()
+        self.app.geometry("1540x920+0+0")
+        self.settle()
+
+        self.app.scenario_tree.selection_set("A")
+        self.app._start_scenario_price_edit()
+        self.settle()
+        editor = self.app._scenario_price_editor
+        self.assertIsNotNone(editor)
+        assert editor is not None
+        editor.delete(0, tk.END)
+        editor.insert(0, "9999")
+        self.assertEqual(self.app._cancel_scenario_price_edit(), "break")
+        self.settle()
+
+        self.assertIsNone(self.app._scenario_price_editor)
+        self.assertEqual(self.app.db.planned_prices(self.july_id), {})
+        self.assertEqual(self.app.scenario_tree.selection(), ("A",))
 
     def test_expanded_tables_keep_buttons_in_a_row_above_the_headings(self) -> None:
         self.app.geometry("1540x920+0+0")
